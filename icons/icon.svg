@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Zoom Loop">
+  <rect width="512" height="512" rx="108" fill="#101112"/>
+  <circle cx="256" cy="256" r="176" fill="#37c0aa"/>
+  <circle cx="256" cy="256" r="118" fill="#f5f2ec" opacity=".92"/>
+  <circle cx="256" cy="256" r="64" fill="#f06d4f"/>
+  <path d="M110 260c54-78 112-118 174-120 57-1 95 27 118 74" fill="none" stroke="#101112" stroke-width="34" stroke-linecap="round" opacity=".64"/>
+  <path d="M112 340c65-47 134-62 207-47 40 8 69 23 88 44" fill="none" stroke="#101112" stroke-width="28" stroke-linecap="round" opacity=".5"/>
+  <path d="M264 186 356 256 264 326Z" fill="#101112"/>
+</svg>

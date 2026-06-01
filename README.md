@@ -6,6 +6,8 @@ Everything runs in your browser. Your photos are not uploaded to a server.
 
 ## Quick Start
 
+On this computer:
+
 1. Download or clone this repository.
 2. Open the project folder.
 3. Double-click `index.html`.
@@ -14,12 +16,33 @@ Everything runs in your browser. Your photos are not uploaded to a server.
 
 No install, build step, or server is required.
 
+## Use On A Phone
+
+For the easiest iPhone or Android experience, use the app from an HTTPS link such as GitHub Pages.
+
+This repo includes a GitHub Pages workflow. In GitHub, open the repository settings, go to `Pages`, set the source to `GitHub Actions`, then run or push the workflow. After it deploys, open the Pages URL on your phone.
+
+Android:
+
+1. Open the app link in Chrome.
+2. Tap `Install` if the app shows the button.
+3. If no button appears, open the browser menu and choose `Add to Home screen` or `Install app`.
+
+iPhone or iPad:
+
+1. Open the app link in Safari.
+2. Tap the iOS Share button.
+3. Choose `Add to Home Screen`.
+4. Open `Zoom Loop` from the home screen.
+
+The installed app works offline after it has loaded once.
+
 ## Add Your Photos
 
 Use at least two images.
 
 1. Click `Add Images`.
-2. Select multiple photos from your computer.
+2. Select multiple photos from your computer, iPhone Photos, or Android Gallery.
 3. The images appear in the `Image Stack` panel on the right.
 4. Use `Up`, `Dn`, and `X` to reorder or remove images.
 
@@ -88,10 +111,13 @@ Rotates the symmetry fold so you can line it up with lines, faces, windows, text
 `PNG`
 Downloads the current canvas frame as `zoom-loop-frame.png`.
 
-`WebM`
-Records one full loop and downloads it as `zoom-loop.webm`.
+`Share`
+Opens the phone or computer share sheet with the current PNG frame when supported. On phones, use this to save or send the image through Photos, Gallery, Files, Messages, or other apps.
 
-WebM recording depends on your browser. If recording does not work, try Microsoft Edge or Chrome.
+`Video`
+Records one full loop. The app uses MP4 when the browser supports it, otherwise WebM. If sharing files is supported, it opens the native share sheet; otherwise it downloads the video.
+
+Video recording depends on your browser. If recording does not work, try Microsoft Edge or Chrome. On iPhone, some browsers may save video to Files instead of directly to Photos.
 
 ## Tips
 
@@ -112,3 +138,5 @@ If you only see one image, add at least one more photo. The loop needs two or mo
 If the exported video is too large, lower `Canvas`, `Frames`, or `FPS`.
 
 If the app feels slow, use fewer photos or lower the `Canvas` size.
+
+If the app does not show an install option, make sure you opened it from an HTTPS link instead of directly from a local file.

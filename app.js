@@ -7,8 +7,10 @@ const fileInput = document.querySelector("#fileInput");
 const dropZone = document.querySelector("#dropZone");
 const imageList = document.querySelector("#imageList");
 const statusText = document.querySelector("#statusText");
+const installButton = document.querySelector("#installButton");
 const playButton = document.querySelector("#playButton");
 const stagePlayButton = document.querySelector("#stagePlayButton");
+const shareButton = document.querySelector("#shareButton");
 const pngButton = document.querySelector("#pngButton");
 const webmButton = document.querySelector("#webmButton");
 const sampleButton = document.querySelector("#sampleButton");
@@ -47,6 +49,7 @@ const state = {
 };
 
 const featherMaskCache = new Map();
+let deferredInstallPrompt = null;
 
 const controls = [
   sizeInput,
@@ -174,6 +177,40 @@ function invalidateTransitions() {
   state.transitions.clear();
 }
 
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator) || window.location.protocol === "file:") {
+    return;
+  }
+
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch(() => {
+      statusText.textContent = "Offline install unavailable";
+    });
+  });
+}
+
+function setupInstallPrompt() {
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    installButton.classList.remove("is-hidden");
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    installButton.classList.add("is-hidden");
+  });
+}
+
+async function promptInstall() {
+  if (!deferredInstallPrompt) return;
+
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  installButton.classList.add("is-hidden");
+}
+
 async function loadFiles(files) {
   const imageFiles = [...files].filter((file) => file.type.startsWith("image/"));
   if (!imageFiles.length) return;
@@ -287,6 +324,8 @@ function updateStatus() {
   }
   playButton.disabled = count < 2 || state.isRecording;
   stagePlayButton.disabled = count < 2 || state.isRecording;
+  shareButton.disabled = state.isRecording;
+  pngButton.disabled = state.isRecording;
   webmButton.disabled = count < 2 || state.isRecording;
   syncPlaybackUi();
 }
@@ -954,11 +993,90 @@ function drawSampleImage(ctx, palette, index) {
   ctx.fillText(String(index + 1), SOURCE_SIZE / 2, SOURCE_SIZE / 2);
 }
 
-function downloadCanvasPng() {
+function dataUrlToBlob(dataUrl) {
+  const [header, data] = dataUrl.split(",");
+  const mimeMatch = header.match(/data:(.*?);base64/);
+  const mimeType = mimeMatch ? mimeMatch[1] : "application/octet-stream";
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index++) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return new Blob([bytes], { type: mimeType });
+}
+
+function canvasToBlob(type = "image/png", quality = 0.95) {
+  return new Promise((resolve) => {
+    if (!previewCanvas.toBlob) {
+      resolve(dataUrlToBlob(previewCanvas.toDataURL(type, quality)));
+      return;
+    }
+
+    previewCanvas.toBlob((blob) => {
+      resolve(blob || dataUrlToBlob(previewCanvas.toDataURL(type, quality)));
+    }, type, quality);
+  });
+}
+
+function downloadBlob(blob, fileName) {
   const link = document.createElement("a");
-  link.href = previewCanvas.toDataURL("image/png");
-  link.download = "zoom-loop-frame.png";
+  const url = URL.createObjectURL(blob);
+  link.href = url;
+  link.download = fileName;
   link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function shareBlob(blob, fileName, title) {
+  if (!navigator.share || !window.File) return "unsupported";
+
+  const file = new File([blob], fileName, {
+    type: blob.type || "application/octet-stream"
+  });
+  const payload = {
+    files: [file],
+    text: "Made with Zoom Loop",
+    title
+  };
+
+  if (navigator.canShare && !navigator.canShare({ files: [file] })) {
+    return "unsupported";
+  }
+
+  try {
+    await navigator.share(payload);
+    return "shared";
+  } catch (error) {
+    return error.name === "AbortError" ? "cancelled" : "unsupported";
+  }
+}
+
+async function shareOrDownloadBlob(blob, fileName, title) {
+  const result = await shareBlob(blob, fileName, title);
+
+  if (result === "shared") {
+    statusText.textContent = "Shared";
+    return;
+  }
+
+  if (result === "cancelled") {
+    statusText.textContent = "Share canceled";
+    return;
+  }
+
+  downloadBlob(blob, fileName);
+}
+
+async function downloadCanvasPng() {
+  const blob = await canvasToBlob("image/png");
+  downloadBlob(blob, "zoom-loop-frame.png");
+}
+
+async function shareCurrentFrame() {
+  const blob = await canvasToBlob("image/png");
+  await shareOrDownloadBlob(blob, "zoom-loop-frame.png", "Zoom Loop frame");
 }
 
 async function recordWebm() {
@@ -1001,26 +1119,31 @@ async function recordWebm() {
   await finished;
   stream.getTracks().forEach((track) => track.stop());
 
-  const blob = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "zoom-loop.webm";
-  link.click();
-  URL.revokeObjectURL(url);
+  const blob = new Blob(chunks, {
+    type: recorder.mimeType || mimeType || "video/webm"
+  });
+  const fileName = `zoom-loop.${getVideoExtension(blob.type)}`;
+  await shareOrDownloadBlob(blob, fileName, "Zoom Loop video");
 
   state.isRecording = false;
-  webmButton.textContent = "WebM";
+  webmButton.textContent = "Video";
   updateStatus();
 }
 
 function getRecorderMimeType() {
   const options = [
+    "video/mp4;codecs=h264",
+    "video/mp4;codecs=avc1.42E01E",
+    "video/mp4",
     "video/webm;codecs=vp9",
     "video/webm;codecs=vp8",
     "video/webm"
   ];
   return options.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function getVideoExtension(mimeType) {
+  return mimeType.includes("mp4") ? "mp4" : "webm";
 }
 
 fileInput.addEventListener("change", (event) => {
@@ -1050,12 +1173,12 @@ dropZone.addEventListener("drop", (event) => {
   loadFiles(event.dataTransfer.files);
 });
 
-playButton.addEventListener("click", () => {
-  togglePlayback();
-});
+installButton.addEventListener("click", promptInstall);
+playButton.addEventListener("click", togglePlayback);
 stagePlayButton.addEventListener("click", togglePlayback);
 
 pngButton.addEventListener("click", downloadCanvasPng);
+shareButton.addEventListener("click", shareCurrentFrame);
 webmButton.addEventListener("click", recordWebm);
 sampleButton.addEventListener("click", createSampleSet);
 clearButton.addEventListener("click", clearImages);
@@ -1081,6 +1204,8 @@ controls.forEach((control) => {
   });
 });
 
+registerServiceWorker();
+setupInstallPrompt();
 setCanvasSize(Number(sizeInput.value));
 const urlParams = new URLSearchParams(window.location.search);
 if (urlParams.get("auto") === "1") {

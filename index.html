@@ -2,8 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Zoom Loop</title>
+    <meta name="description" content="Create recursive photo zoom loops from images on your phone or computer.">
+    <meta name="theme-color" content="#101112">
+    <meta name="application-name" content="Zoom Loop">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Zoom Loop">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
@@ -15,9 +24,11 @@
             <p id="statusText">Empty stack</p>
           </div>
           <div class="transport">
+            <button id="installButton" class="is-hidden" type="button">Install</button>
             <button id="playButton" type="button">Play</button>
+            <button id="shareButton" type="button">Share</button>
             <button id="pngButton" type="button">PNG</button>
-            <button id="webmButton" type="button">WebM</button>
+            <button id="webmButton" type="button">Video</button>
           </div>
         </div>
 
