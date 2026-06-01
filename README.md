@@ -4,6 +4,34 @@ Zoom Loop is a browser app for making recursive photo zoom loops. You add a stac
 
 Everything runs in your browser. Your photos are not uploaded to a server.
 
+## Phone Install Link
+
+Open the app on your phone:
+
+**[Open Zoom Loop](https://tboy450.github.io/zoom-loop/)**
+
+No App Store or Play Store download is required. Zoom Loop installs from the browser as a web app.
+
+Android:
+
+1. Tap the **[Open Zoom Loop](https://tboy450.github.io/zoom-loop/)** link on your Android phone.
+2. Open the link in Chrome if it opens inside GitHub or another app.
+3. Tap `Install` if Chrome shows the install button.
+4. If no button appears, open the Chrome menu and choose `Add to Home screen` or `Install app`.
+5. Open `Zoom Loop` from your home screen.
+
+iPhone or iPad:
+
+1. Tap the **[Open Zoom Loop](https://tboy450.github.io/zoom-loop/)** link on your iPhone or iPad.
+2. Open the link in Safari if it opens inside GitHub or another app.
+3. Tap the Safari Share button.
+4. Choose `Add to Home Screen`.
+5. Tap `Add`, then open `Zoom Loop` from your home screen.
+
+The installed app works offline after it has loaded once.
+
+If the app link shows a 404 page, GitHub Pages has not been turned on yet. In GitHub, open this repo's `Settings`, go to `Pages`, set the source to `GitHub Actions`, then push a change or rerun the Pages workflow.
+
 ## Quick Start
 
 On this computer:
@@ -14,28 +42,7 @@ On this computer:
 4. Your browser will open the Zoom Loop app.
 5. Click `Sample Set` if you want to test it before using your own photos.
 
-No install, build step, or server is required.
-
-## Use On A Phone
-
-For the easiest iPhone or Android experience, use the app from an HTTPS link such as GitHub Pages.
-
-This repo includes a GitHub Pages workflow. In GitHub, open the repository settings, go to `Pages`, set the source to `GitHub Actions`, then run or push the workflow. After it deploys, open the Pages URL on your phone.
-
-Android:
-
-1. Open the app link in Chrome.
-2. Tap `Install` if the app shows the button.
-3. If no button appears, open the browser menu and choose `Add to Home screen` or `Install app`.
-
-iPhone or iPad:
-
-1. Open the app link in Safari.
-2. Tap the iOS Share button.
-3. Choose `Add to Home Screen`.
-4. Open `Zoom Loop` from the home screen.
-
-The installed app works offline after it has loaded once.
+No install, build step, or server is required for desktop use.
 
 ## Add Your Photos
 
