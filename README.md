@@ -61,6 +61,8 @@ The order matters:
 
 You can also drag image files onto the `Add Images` box.
 
+Supported formats include JPG/JPEG, PNG, WebP, GIF, BMP, AVIF, HEIC, and HEIF. The app converts each loaded photo into an internal square canvas before rendering the loop. If a HEIC or HEIF photo does not open, load the app while online once so the converter can load, or save/export the photo as JPEG or PNG and add it again.
+
 ## Make The Loop
 
 Click the large play button in the middle of the preview, or click `Play` in the top bar.
@@ -147,3 +149,5 @@ If the exported video is too large, lower `Canvas`, `Frames`, or `FPS`.
 If the app feels slow, use fewer photos or lower the `Canvas` size.
 
 If the app does not show an install option, make sure you opened it from an HTTPS link instead of directly from a local file.
+
+If phone photos do not upload, refresh the app first so the newest offline cache loads. iPhone HEIC/HEIF photos can be converted by the app when online, but JPEG or PNG is the most reliable fallback on any phone.

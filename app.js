@@ -7,6 +7,7 @@ const fileInput = document.querySelector("#fileInput");
 const dropZone = document.querySelector("#dropZone");
 const imageList = document.querySelector("#imageList");
 const statusText = document.querySelector("#statusText");
+const uploadHelp = document.querySelector("#uploadHelp");
 const installButton = document.querySelector("#installButton");
 const playButton = document.querySelector("#playButton");
 const stagePlayButton = document.querySelector("#stagePlayButton");
@@ -37,6 +38,21 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MICRO_SIZE = 640;
 const TAU = Math.PI * 2;
+const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
+const SUPPORTED_IMAGE_EXTENSIONS = new Set([
+  "jpg",
+  "jpeg",
+  "png",
+  "webp",
+  "gif",
+  "bmp",
+  "avif",
+  "heic",
+  "heif",
+  "tif",
+  "tiff"
+]);
+const HEIC_EXTENSIONS = new Set(["heic", "heif"]);
 
 const state = {
   images: [],
@@ -44,12 +60,14 @@ const state = {
   progress: 0,
   isPlaying: false,
   isRecording: false,
+  isLoading: false,
   lastTime: 0,
   dragDepth: 0
 };
 
 const featherMaskCache = new Map();
 let deferredInstallPrompt = null;
+let heicConverterPromise = null;
 
 const controls = [
   sizeInput,
@@ -98,8 +116,11 @@ function makeCanvas(width, height) {
 }
 
 function coverDraw(ctx, image, width, height) {
-  const sourceW = image.width;
-  const sourceH = image.height;
+  const sourceW = image.naturalWidth || image.videoWidth || image.width;
+  const sourceH = image.naturalHeight || image.videoHeight || image.height;
+  if (!sourceW || !sourceH) {
+    throw new Error("Image has no readable dimensions");
+  }
   const sourceRatio = sourceW / sourceH;
   const targetRatio = width / height;
   let cropW = sourceW;
@@ -211,31 +232,281 @@ async function promptInstall() {
   installButton.classList.add("is-hidden");
 }
 
-async function loadFiles(files) {
-  const imageFiles = [...files].filter((file) => file.type.startsWith("image/"));
-  if (!imageFiles.length) return;
+function createId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
-  statusText.textContent = "Loading images";
+function plural(count, singular, pluralForm = `${singular}s`) {
+  return count === 1 ? singular : pluralForm;
+}
 
-  for (const file of imageFiles) {
-    const url = URL.createObjectURL(file);
-    const bitmap = await createImageBitmap(file);
-    const canvas = normalizeImage(bitmap);
-    state.images.push({
-      id: crypto.randomUUID(),
-      name: file.name,
-      width: bitmap.width,
-      height: bitmap.height,
-      url,
-      canvas
-    });
-    bitmap.close();
+function getFileExtension(file) {
+  const name = file.name || "";
+  const dotIndex = name.lastIndexOf(".");
+  return dotIndex === -1 ? "" : name.slice(dotIndex + 1).toLowerCase();
+}
+
+function getReadableFileName(file) {
+  return file.name || "phone photo";
+}
+
+function isLikelyImageFile(file) {
+  const type = (file.type || "").toLowerCase();
+  return type.startsWith("image/") || SUPPORTED_IMAGE_EXTENSIONS.has(getFileExtension(file));
+}
+
+function isHeicFile(file) {
+  const type = (file.type || "").toLowerCase();
+  return type.includes("heic") || type.includes("heif") || HEIC_EXTENSIONS.has(getFileExtension(file));
+}
+
+function setUploadHelp(message, tone = "") {
+  if (!uploadHelp) return;
+  uploadHelp.textContent = message;
+  uploadHelp.classList.toggle("is-error", tone === "error");
+  uploadHelp.classList.toggle("is-ok", tone === "ok");
+}
+
+function setUploadBusy(isBusy) {
+  state.isLoading = isBusy;
+  fileInput.disabled = isBusy;
+  dropZone.classList.toggle("is-loading", isBusy);
+}
+
+function createThumbnailUrl(canvas) {
+  const thumb = makeCanvas(160, 160);
+  const ctx = thumb.getContext("2d", { alpha: false });
+  ctx.drawImage(canvas, 0, 0, thumb.width, thumb.height);
+  return thumb.toDataURL("image/jpeg", 0.78);
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const existingScript = document.querySelector(`script[src="${src}"]`);
+    if (existingScript) {
+      if (existingScript.dataset.ready === "true") {
+        resolve();
+        return;
+      }
+      existingScript.addEventListener("load", resolve, { once: true });
+      existingScript.addEventListener("error", reject, { once: true });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.crossOrigin = "anonymous";
+    script.addEventListener("load", () => {
+      script.dataset.ready = "true";
+      resolve();
+    }, { once: true });
+    script.addEventListener("error", () => {
+      reject(new Error("HEIC converter could not be loaded"));
+    }, { once: true });
+    document.head.append(script);
+  });
+}
+
+async function getHeicConverter() {
+  if (window.heic2any) return window.heic2any;
+
+  if (!heicConverterPromise) {
+    heicConverterPromise = loadScript(HEIC_CONVERTER_URL);
   }
 
-  invalidateTransitions();
-  renderImageList();
+  await heicConverterPromise;
+  if (!window.heic2any) {
+    throw new Error("HEIC converter is unavailable");
+  }
+  return window.heic2any;
+}
+
+function makeConvertedFile(blob, originalFile) {
+  const safeName = (originalFile.name || "photo.heic").replace(/\.[^.]+$/, "") || "photo";
+  const fileName = `${safeName}.jpg`;
+
+  try {
+    return new File([blob], fileName, { type: "image/jpeg" });
+  } catch {
+    blob.name = fileName;
+    return blob;
+  }
+}
+
+async function convertHeicFile(file) {
+  const heic2any = await getHeicConverter();
+  const result = await heic2any({
+    blob: file,
+    toType: "image/jpeg",
+    quality: 0.92
+  });
+  const convertedBlob = Array.isArray(result) ? result[0] : result;
+  return makeConvertedFile(convertedBlob, file);
+}
+
+async function decodeWithImageBitmap(file) {
+  let bitmap = null;
+
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  } catch {
+    bitmap = await createImageBitmap(file);
+  }
+
+  try {
+    return {
+      canvas: normalizeImage(bitmap),
+      width: bitmap.width,
+      height: bitmap.height
+    };
+  } finally {
+    if (bitmap?.close) bitmap.close();
+  }
+}
+
+async function decodeWithImageElement(file) {
+  const url = URL.createObjectURL(file);
+  const image = new Image();
+  image.decoding = "async";
+
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error("Browser could not read this image"));
+      image.src = url;
+    });
+
+    return {
+      canvas: normalizeImage(image),
+      width: image.naturalWidth || image.width,
+      height: image.naturalHeight || image.height
+    };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function decodeNatively(file) {
+  let bitmapError = null;
+
+  if ("createImageBitmap" in window) {
+    try {
+      return await decodeWithImageBitmap(file);
+    } catch (error) {
+      bitmapError = error;
+    }
+  }
+
+  try {
+    return await decodeWithImageElement(file);
+  } catch (imageError) {
+    throw bitmapError || imageError;
+  }
+}
+
+async function decodePhotoFile(file) {
+  try {
+    return {
+      ...(await decodeNatively(file)),
+      converted: false
+    };
+  } catch (nativeError) {
+    if (!isHeicFile(file)) throw nativeError;
+
+    const convertedFile = await convertHeicFile(file);
+    return {
+      ...(await decodeNatively(convertedFile)),
+      converted: true
+    };
+  }
+}
+
+async function loadFiles(files) {
+  if (state.isLoading) return;
+
+  const selectedFiles = [...files];
+  const imageFiles = selectedFiles.filter(isLikelyImageFile);
+  const skippedCount = selectedFiles.length - imageFiles.length;
+
+  if (!selectedFiles.length) return;
+
+  if (!imageFiles.length) {
+    statusText.textContent = "No images loaded";
+    setUploadHelp("Try JPG, PNG, WebP, GIF, BMP, AVIF, HEIC, or HEIF.", "error");
+    return;
+  }
+
+  const failed = [];
+  let loadedCount = 0;
+  let convertedCount = 0;
+
+  setUploadBusy(true);
+  setUploadHelp("Preparing images");
+
+  try {
+    for (const [index, file] of imageFiles.entries()) {
+      statusText.textContent = `Loading ${index + 1} of ${imageFiles.length}`;
+
+      try {
+        const decoded = await decodePhotoFile(file);
+        state.images.push({
+          id: createId(),
+          name: getReadableFileName(file),
+          width: decoded.width,
+          height: decoded.height,
+          url: createThumbnailUrl(decoded.canvas),
+          canvas: decoded.canvas
+        });
+        loadedCount++;
+        if (decoded.converted) convertedCount++;
+      } catch (error) {
+        failed.push({ file, error });
+      }
+    }
+  } finally {
+    setUploadBusy(false);
+  }
+
+  if (loadedCount > 0) {
+    invalidateTransitions();
+    renderImageList();
+    drawCurrentFrame();
+  }
+
   updateStatus();
-  drawCurrentFrame();
+
+  if (!loadedCount) {
+    statusText.textContent = "No images loaded";
+  }
+
+  const messages = [];
+  if (loadedCount > 0) {
+    messages.push(`Loaded ${loadedCount} ${plural(loadedCount, "image")}`);
+  }
+  if (convertedCount > 0) {
+    messages.push(`converted ${convertedCount} HEIC/HEIF ${plural(convertedCount, "photo", "photos")}`);
+  }
+  if (skippedCount > 0) {
+    messages.push(`skipped ${skippedCount} unsupported ${plural(skippedCount, "file")}`);
+  }
+  if (failed.length > 0) {
+    const failedNames = failed
+      .slice(0, 2)
+      .map(({ file }) => getReadableFileName(file))
+      .join(", ");
+    const hasHeicFailure = failed.some(({ file }) => isHeicFile(file));
+    const extra = hasHeicFailure
+      ? "HEIC conversion needs internet the first time; JPEG or PNG will work too."
+      : "Try saving the photo as JPEG or PNG if your browser cannot read it.";
+    messages.push(`could not open ${failedNames}${failed.length > 2 ? " and more" : ""}. ${extra}`);
+  }
+
+  setUploadHelp(
+    messages.length ? `${messages.join(". ")}.` : "",
+    failed.length > 0 && loadedCount === 0 ? "error" : "ok"
+  );
 }
 
 function renderImageList() {
@@ -939,7 +1210,7 @@ async function createSampleSet() {
     const ctx = canvas.getContext("2d", { alpha: false });
     drawSampleImage(ctx, colors[index], index);
     state.images.push({
-      id: crypto.randomUUID(),
+      id: createId(),
       name: `${names[index]}.png`,
       width: SOURCE_SIZE,
       height: SOURCE_SIZE,

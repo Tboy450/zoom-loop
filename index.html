@@ -47,9 +47,13 @@
 
       <aside class="control-panel" aria-label="Controls">
         <label class="upload-drop" id="dropZone">
-          <input id="fileInput" type="file" accept="image/*" multiple>
-          <span>Add Images</span>
+          <input id="fileInput" type="file" accept="image/*,.jpg,.jpeg,.png,.webp,.gif,.bmp,.avif,.heic,.heif,.tif,.tiff" multiple aria-label="Add images">
+          <span class="upload-copy" aria-hidden="true">
+            <strong>Add Images</strong>
+            <small>JPG PNG WebP HEIC</small>
+          </span>
         </label>
+        <p id="uploadHelp" class="upload-help" aria-live="polite"></p>
 
         <div class="sample-row">
           <button id="sampleButton" type="button">Sample Set</button>

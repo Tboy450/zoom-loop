@@ -269,14 +269,48 @@ input[type="range"] {
   place-items: center;
   text-align: center;
   border-style: dashed;
+  position: relative;
+  overflow: hidden;
 }
 
 .upload-drop input {
-  display: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
 }
 
-.upload-drop span {
+.upload-copy {
+  display: grid;
+  gap: 5px;
+  pointer-events: none;
+}
+
+.upload-copy strong {
   font-weight: 700;
+}
+
+.upload-copy small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.upload-help {
+  min-height: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.upload-help.is-error {
+  color: #f6a66f;
+}
+
+.upload-help.is-ok {
+  color: #8fd1c3;
 }
 
 .panel-section {
