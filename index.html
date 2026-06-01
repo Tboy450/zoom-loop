@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Zoom Loop</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="stage" aria-label="Zoom loop preview">
+        <div class="stage-top">
+          <div>
+            <h1>Zoom Loop</h1>
+            <p id="statusText">Empty stack</p>
+          </div>
+          <div class="transport">
+            <button id="playButton" type="button">Play</button>
+            <button id="pngButton" type="button">PNG</button>
+            <button id="webmButton" type="button">WebM</button>
+          </div>
+        </div>
+
+        <div class="canvas-wrap">
+          <canvas id="previewCanvas" width="1080" height="1080"></canvas>
+        </div>
+
+        <div class="timeline">
+          <input id="timelineInput" type="range" min="0" max="1000" value="0" aria-label="Timeline">
+          <span id="timeReadout">0%</span>
+        </div>
+      </section>
+
+      <aside class="control-panel" aria-label="Controls">
+        <label class="upload-drop" id="dropZone">
+          <input id="fileInput" type="file" accept="image/*" multiple>
+          <span>Add Images</span>
+        </label>
+
+        <div class="sample-row">
+          <button id="sampleButton" type="button">Sample Set</button>
+          <button id="clearButton" type="button">Clear</button>
+        </div>
+
+        <section class="panel-section">
+          <h2>Image Stack</h2>
+          <ol id="imageList" class="image-list"></ol>
+        </section>
+
+        <section class="panel-section">
+          <h2>Render</h2>
+
+          <label class="field">
+            <span>Canvas</span>
+            <select id="sizeInput">
+              <option value="720">720</option>
+              <option value="1080" selected>1080</option>
+              <option value="1440">1440</option>
+              <option value="2160">2160</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Frames</span>
+            <input id="framesInput" type="number" min="24" max="240" step="6" value="90">
+          </label>
+
+          <label class="field">
+            <span>FPS</span>
+            <input id="fpsInput" type="number" min="12" max="60" step="1" value="30">
+          </label>
+        </section>
+
+        <section class="panel-section">
+          <h2>Microcosm</h2>
+
+          <label class="field slider-field">
+            <span>Patch size</span>
+            <input id="patchInput" type="range" min="8" max="34" value="17">
+          </label>
+
+          <label class="field slider-field">
+            <span>Anchor X</span>
+            <input id="anchorXInput" type="range" min="18" max="82" value="52">
+          </label>
+
+          <label class="field slider-field">
+            <span>Anchor Y</span>
+            <input id="anchorYInput" type="range" min="18" max="82" value="48">
+          </label>
+
+          <label class="field slider-field">
+            <span>Color bind</span>
+            <input id="bindInput" type="range" min="0" max="100" value="72">
+          </label>
+
+          <label class="field slider-field">
+            <span>Pixel grain</span>
+            <input id="grainInput" type="range" min="0" max="100" value="36">
+          </label>
+        </section>
+      </aside>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
