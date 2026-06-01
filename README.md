@@ -33,7 +33,7 @@ You can also drag image files onto the `Add Images` box.
 
 ## Make The Loop
 
-Click `Play` to preview the animation.
+Click the large play button in the middle of the preview, or click `Play` in the top bar.
 
 Use the timeline slider along the bottom to scrub through the loop by hand.
 
@@ -62,6 +62,9 @@ Move the portal left/right and up/down inside the current image.
 `Color bind`
 Controls how strongly the hidden photo borrows color from the parent image. Higher values make the hidden photo blend more into the pixels around it.
 
+`Sample blend`
+Softens how the hidden image is sampled and fades the portal edge into the parent image. Raise this when the hidden image looks pasted on or too harsh.
+
 `Pixel grain`
 Makes the hidden portal more blocky and pixel-like before the zoom reveals it.
 
@@ -87,7 +90,7 @@ WebM recording depends on your browser. If recording does not work, try Microsof
 - Square images work best, but the app will crop rectangular photos into a square.
 - Put visually similar photos next to each other for smoother transitions.
 - Put very different photos next to each other for a more surreal jump.
-- If the hidden portal is too obvious, increase `Color bind` or `Pixel grain`.
+- If the hidden portal is too obvious, increase `Color bind`, `Sample blend`, or `Pixel grain`.
 - If the zoom feels too slow or too fast, adjust `Zoom speed` first.
 
 ## Troubleshooting

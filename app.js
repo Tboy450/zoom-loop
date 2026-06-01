@@ -8,6 +8,7 @@ const dropZone = document.querySelector("#dropZone");
 const imageList = document.querySelector("#imageList");
 const statusText = document.querySelector("#statusText");
 const playButton = document.querySelector("#playButton");
+const stagePlayButton = document.querySelector("#stagePlayButton");
 const pngButton = document.querySelector("#pngButton");
 const webmButton = document.querySelector("#webmButton");
 const sampleButton = document.querySelector("#sampleButton");
@@ -23,6 +24,7 @@ const patchInput = document.querySelector("#patchInput");
 const anchorXInput = document.querySelector("#anchorXInput");
 const anchorYInput = document.querySelector("#anchorYInput");
 const bindInput = document.querySelector("#bindInput");
+const sampleBlendInput = document.querySelector("#sampleBlendInput");
 const grainInput = document.querySelector("#grainInput");
 const symmetryInput = document.querySelector("#symmetryInput");
 const alignmentInput = document.querySelector("#alignmentInput");
@@ -50,6 +52,7 @@ const controls = [
   anchorXInput,
   anchorYInput,
   bindInput,
+  sampleBlendInput,
   grainInput,
   symmetryInput,
   alignmentInput
@@ -127,6 +130,7 @@ function getSettings() {
     anchorX: Number(anchorXInput.value) / 100,
     anchorY: Number(anchorYInput.value) / 100,
     bind: Number(bindInput.value) / 100,
+    sampleBlend: Number(sampleBlendInput.value) / 100,
     grain: Number(grainInput.value) / 100,
     symmetry: Number(symmetryInput.value),
     alignment: Number(alignmentInput.value) / 360
@@ -145,6 +149,7 @@ function transitionKey(fromId, toId, settings) {
     settings.anchorX.toFixed(3),
     settings.anchorY.toFixed(3),
     settings.bind.toFixed(3),
+    settings.sampleBlend.toFixed(3),
     settings.grain.toFixed(3),
     settings.symmetry,
     settings.alignment.toFixed(3)
@@ -263,8 +268,27 @@ function updateStatus() {
   if (count === 0) statusText.textContent = "Empty stack";
   else if (count === 1) statusText.textContent = "Add one more image";
   else statusText.textContent = `${count} images in loop`;
+  if (count < 2 || state.isRecording) {
+    state.isPlaying = false;
+  }
   playButton.disabled = count < 2 || state.isRecording;
+  stagePlayButton.disabled = count < 2 || state.isRecording;
   webmButton.disabled = count < 2 || state.isRecording;
+  syncPlaybackUi();
+}
+
+function syncPlaybackUi() {
+  const label = state.isPlaying ? "Pause" : "Play";
+  playButton.textContent = label;
+  stagePlayButton.classList.toggle("is-playing", state.isPlaying);
+  stagePlayButton.setAttribute("aria-label", `${label} loop`);
+}
+
+function togglePlayback() {
+  if (state.images.length < 2 || state.isRecording) return;
+  state.isPlaying = !state.isPlaying;
+  state.lastTime = 0;
+  syncPlaybackUi();
 }
 
 function drawEmpty() {
@@ -350,6 +374,40 @@ function getPortalSampleIndex(x, y, settings) {
   return (sampleY * MICRO_SIZE + sampleX) * 4;
 }
 
+function getPortalColor(x, y, childData, settings) {
+  const spread = Math.max(1, Math.round(1 + settings.sampleBlend * 7));
+  const samples = settings.sampleBlend > 0.04
+    ? [
+        [0, 0, 4],
+        [spread, 0, 1],
+        [-spread, 0, 1],
+        [0, spread, 1],
+        [0, -spread, 1]
+      ]
+    : [[0, 0, 1]];
+
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let weight = 0;
+
+  for (const [offsetX, offsetY, sampleWeight] of samples) {
+    const sampleX = clamp(x + offsetX, 0, MICRO_SIZE - 1);
+    const sampleY = clamp(y + offsetY, 0, MICRO_SIZE - 1);
+    const index = getPortalSampleIndex(sampleX, sampleY, settings);
+    r += childData.data[index] * sampleWeight;
+    g += childData.data[index + 1] * sampleWeight;
+    b += childData.data[index + 2] * sampleWeight;
+    weight += sampleWeight;
+  }
+
+  return {
+    r: r / weight,
+    g: g / weight,
+    b: b / weight
+  };
+}
+
 function buildMicroCanvas(parentCanvas, childCanvas, settings) {
   const sourceParent = makeCanvas(MICRO_SIZE, MICRO_SIZE);
   const sourceChild = makeCanvas(MICRO_SIZE, MICRO_SIZE);
@@ -379,24 +437,32 @@ function buildMicroCanvas(parentCanvas, childCanvas, settings) {
       const index = (y * MICRO_SIZE + x) * 4;
       const blockX = Math.floor(x / block) * block;
       const sampleIndex = (blockY * MICRO_SIZE + blockX) * 4;
-      const portalIndex = getPortalSampleIndex(x, y, settings);
-      const cr = childData.data[portalIndex];
-      const cg = childData.data[portalIndex + 1];
-      const cb = childData.data[portalIndex + 2];
-      const pr = parentData.data[sampleIndex];
-      const pg = parentData.data[sampleIndex + 1];
-      const pb = parentData.data[sampleIndex + 2];
+      const childColor = getPortalColor(x, y, childData, settings);
+      const cr = childColor.r;
+      const cg = childColor.g;
+      const cb = childColor.b;
+      const localPr = parentData.data[index];
+      const localPg = parentData.data[index + 1];
+      const localPb = parentData.data[index + 2];
+      const pr = lerp(localPr, parentData.data[sampleIndex], settings.grain);
+      const pg = lerp(localPg, parentData.data[sampleIndex + 1], settings.grain);
+      const pb = lerp(localPb, parentData.data[sampleIndex + 2], settings.grain);
       const luma = (cr * 0.2126 + cg * 0.7152 + cb * 0.0722) / 255;
-      const tintBoost = 0.42 + luma * 0.9;
-      const boundR = clamp(pr * tintBoost + baseColor.r * 0.12, 0, 255);
-      const boundG = clamp(pg * tintBoost + baseColor.g * 0.12, 0, 255);
-      const boundB = clamp(pb * tintBoost + baseColor.b * 0.12, 0, 255);
+      const tintBoost = 0.48 + luma * (0.88 + settings.sampleBlend * 0.22);
+      const chroma = 0.18 * (1 - settings.bind) * (1 - settings.sampleBlend * 0.45);
+      const neutral = luma * 255;
+      const boundR = clamp(pr * tintBoost + baseColor.r * 0.08 + (cr - neutral) * chroma, 0, 255);
+      const boundG = clamp(pg * tintBoost + baseColor.g * 0.08 + (cg - neutral) * chroma, 0, 255);
+      const boundB = clamp(pb * tintBoost + baseColor.b * 0.08 + (cb - neutral) * chroma, 0, 255);
       const noise = ((x * 13 + y * 17) % 11) / 10 - 0.5;
-      const dither = noise * settings.grain * 22;
+      const dither = noise * settings.grain * (1 - settings.sampleBlend * 0.55) * 22;
+      const edgeDistance = Math.min(x, y, MICRO_SIZE - 1 - x, MICRO_SIZE - 1 - y) / MICRO_SIZE;
+      const edgeWidth = 0.012 + settings.sampleBlend * 0.16;
+      const edgeBlend = smoothstep(0, edgeWidth, edgeDistance);
 
-      result.data[index] = clamp(lerp(cr, boundR, bind) + dither, 0, 255);
-      result.data[index + 1] = clamp(lerp(cg, boundG, bind) + dither, 0, 255);
-      result.data[index + 2] = clamp(lerp(cb, boundB, bind) + dither, 0, 255);
+      result.data[index] = clamp(lerp(localPr, lerp(cr, boundR, bind) + dither, edgeBlend), 0, 255);
+      result.data[index + 1] = clamp(lerp(localPg, lerp(cg, boundG, bind) + dither, edgeBlend), 0, 255);
+      result.data[index + 2] = clamp(lerp(localPb, lerp(cb, boundB, bind) + dither, edgeBlend), 0, 255);
       result.data[index + 3] = 255;
     }
   }
@@ -594,7 +660,6 @@ async function recordWebm() {
   state.isRecording = true;
   state.isPlaying = false;
   updateStatus();
-  playButton.textContent = "Play";
   webmButton.textContent = "Recording";
 
   const settings = getSettings();
@@ -675,11 +740,9 @@ dropZone.addEventListener("drop", (event) => {
 });
 
 playButton.addEventListener("click", () => {
-  if (state.images.length < 2) return;
-  state.isPlaying = !state.isPlaying;
-  playButton.textContent = state.isPlaying ? "Pause" : "Play";
-  state.lastTime = 0;
+  togglePlayback();
 });
+stagePlayButton.addEventListener("click", togglePlayback);
 
 pngButton.addEventListener("click", downloadCanvasPng);
 webmButton.addEventListener("click", recordWebm);

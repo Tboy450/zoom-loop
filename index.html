@@ -23,6 +23,9 @@
 
         <div class="canvas-wrap">
           <canvas id="previewCanvas" width="1080" height="1080"></canvas>
+          <button id="stagePlayButton" class="stage-play-button" type="button" aria-label="Play loop">
+            <span class="stage-play-icon" aria-hidden="true"></span>
+          </button>
         </div>
 
         <div class="timeline">
@@ -97,6 +100,11 @@
           <label class="field slider-field">
             <span>Color bind</span>
             <input id="bindInput" type="range" min="0" max="100" value="72">
+          </label>
+
+          <label class="field slider-field">
+            <span>Sample blend</span>
+            <input id="sampleBlendInput" type="range" min="0" max="100" value="55">
           </label>
 
           <label class="field slider-field">

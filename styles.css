@@ -128,6 +128,7 @@ h2 {
   min-height: 0;
   display: grid;
   place-items: center;
+  position: relative;
 }
 
 #previewCanvas {
@@ -139,6 +140,81 @@ h2 {
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
   background: #0b0c0d;
+}
+
+.stage-play-button {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 78px;
+  height: 78px;
+  min-height: 78px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border-color: rgba(245, 242, 236, 0.46);
+  background: rgba(16, 17, 18, 0.68);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.42);
+  transform: translate(-50%, -50%);
+  transition:
+    background 160ms ease,
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.stage-play-button:hover {
+  background: rgba(33, 49, 47, 0.88);
+  transform: translate(-50%, -50%) scale(1.04);
+}
+
+.stage-play-button:disabled {
+  opacity: 0.35;
+}
+
+.stage-play-button.is-playing {
+  opacity: 0.18;
+}
+
+.canvas-wrap:hover .stage-play-button.is-playing {
+  opacity: 0.86;
+}
+
+.stage-play-icon {
+  display: block;
+  width: 0;
+  height: 0;
+  margin-left: 6px;
+  border-top: 15px solid transparent;
+  border-bottom: 15px solid transparent;
+  border-left: 23px solid var(--text);
+}
+
+.stage-play-button.is-playing .stage-play-icon {
+  position: relative;
+  width: 25px;
+  height: 30px;
+  margin-left: 0;
+  border: 0;
+}
+
+.stage-play-button.is-playing .stage-play-icon::before,
+.stage-play-button.is-playing .stage-play-icon::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 8px;
+  height: 30px;
+  border-radius: 2px;
+  background: var(--text);
+}
+
+.stage-play-button.is-playing .stage-play-icon::before {
+  left: 2px;
+}
+
+.stage-play-button.is-playing .stage-play-icon::after {
+  right: 2px;
 }
 
 .timeline {
