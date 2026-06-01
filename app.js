@@ -21,6 +21,7 @@ const framesInput = document.querySelector("#framesInput");
 const fpsInput = document.querySelector("#fpsInput");
 const zoomRateInput = document.querySelector("#zoomRateInput");
 const patchInput = document.querySelector("#patchInput");
+const autoAnchorInput = document.querySelector("#autoAnchorInput");
 const anchorXInput = document.querySelector("#anchorXInput");
 const anchorYInput = document.querySelector("#anchorYInput");
 const bindInput = document.querySelector("#bindInput");
@@ -49,6 +50,7 @@ const controls = [
   fpsInput,
   zoomRateInput,
   patchInput,
+  autoAnchorInput,
   anchorXInput,
   anchorYInput,
   bindInput,
@@ -127,6 +129,7 @@ function getSettings() {
     fps: Number(fpsInput.value),
     zoomRate: Number(zoomRateInput.value) / 100,
     patch: Number(patchInput.value) / 100,
+    autoAnchor: autoAnchorInput.checked,
     anchorX: Number(anchorXInput.value) / 100,
     anchorY: Number(anchorYInput.value) / 100,
     bind: Number(bindInput.value) / 100,
@@ -146,6 +149,7 @@ function transitionKey(fromId, toId, settings) {
     fromId,
     toId,
     settings.patch.toFixed(3),
+    settings.autoAnchor ? "auto" : "manual",
     settings.anchorX.toFixed(3),
     settings.anchorY.toFixed(3),
     settings.bind.toFixed(3),
@@ -291,6 +295,12 @@ function togglePlayback() {
   syncPlaybackUi();
 }
 
+function syncAnchorMode() {
+  const isAuto = autoAnchorInput.checked;
+  anchorXInput.disabled = isAuto;
+  anchorYInput.disabled = isAuto;
+}
+
 function drawEmpty() {
   const size = previewCanvas.width;
   const ctx = previewCtx;
@@ -348,6 +358,126 @@ function getParentPatchColor(parentCanvas, settings) {
     r: r / count,
     g: g / count,
     b: b / count
+  };
+}
+
+function summarizePixels(data, width, height, step) {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let luma = 0;
+  let lumaSquared = 0;
+  let count = 0;
+
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      const index = (y * width + x) * 4;
+      const pixelR = data[index];
+      const pixelG = data[index + 1];
+      const pixelB = data[index + 2];
+      const pixelLuma = pixelR * 0.2126 + pixelG * 0.7152 + pixelB * 0.0722;
+
+      r += pixelR;
+      g += pixelG;
+      b += pixelB;
+      luma += pixelLuma;
+      lumaSquared += pixelLuma * pixelLuma;
+      count++;
+    }
+  }
+
+  r /= count;
+  g /= count;
+  b /= count;
+  luma /= count;
+
+  const lumaVariance = Math.max(0, lumaSquared / count - luma * luma);
+  const maxChannel = Math.max(r, g, b);
+  const minChannel = Math.min(r, g, b);
+
+  return {
+    r,
+    g,
+    b,
+    luma,
+    contrast: Math.sqrt(lumaVariance),
+    saturation: (maxChannel - minChannel) / 255
+  };
+}
+
+function getCanvasSignature(canvas) {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const step = 16;
+  const data = ctx.getImageData(0, 0, SOURCE_SIZE, SOURCE_SIZE).data;
+  return summarizePixels(data, SOURCE_SIZE, SOURCE_SIZE, step);
+}
+
+function getPatchSignature(ctx, x, y, size) {
+  const data = ctx.getImageData(x, y, size, size).data;
+  const step = Math.max(4, Math.floor(size / 24));
+  return summarizePixels(data, size, size, step);
+}
+
+function scorePatchSignature(patchSignature, targetSignature) {
+  const red = (patchSignature.r - targetSignature.r) / 255;
+  const green = (patchSignature.g - targetSignature.g) / 255;
+  const blue = (patchSignature.b - targetSignature.b) / 255;
+  const colorDistance = Math.sqrt(red * red + green * green + blue * blue) / Math.sqrt(3);
+  const lumaDistance = Math.abs(patchSignature.luma - targetSignature.luma) / 255;
+  const contrastDistance = Math.abs(patchSignature.contrast - targetSignature.contrast) / 128;
+  const saturationDistance = Math.abs(patchSignature.saturation - targetSignature.saturation);
+
+  return (
+    colorDistance * 0.52 +
+    lumaDistance * 0.22 +
+    contrastDistance * 0.18 +
+    saturationDistance * 0.08
+  );
+}
+
+function findAutoAnchor(parentCanvas, childCanvas, settings) {
+  const parentCtx = parentCanvas.getContext("2d", { willReadFrequently: true });
+  const targetSignature = getCanvasSignature(childCanvas);
+  const patchSize = Math.max(16, Math.round(SOURCE_SIZE * settings.patch));
+  const minCenter = patchSize / 2;
+  const maxCenter = SOURCE_SIZE - patchSize / 2;
+  const gridSize = 11;
+  let best = {
+    anchorX: settings.anchorX,
+    anchorY: settings.anchorY,
+    score: Infinity
+  };
+
+  for (let gridY = 0; gridY < gridSize; gridY++) {
+    const centerY = lerp(minCenter, maxCenter, gridY / (gridSize - 1));
+    for (let gridX = 0; gridX < gridSize; gridX++) {
+      const centerX = lerp(minCenter, maxCenter, gridX / (gridSize - 1));
+      const x = clamp(Math.round(centerX - patchSize / 2), 0, SOURCE_SIZE - patchSize);
+      const y = clamp(Math.round(centerY - patchSize / 2), 0, SOURCE_SIZE - patchSize);
+      const patchSignature = getPatchSignature(parentCtx, x, y, patchSize);
+      const score = scorePatchSignature(patchSignature, targetSignature);
+
+      if (score < best.score) {
+        best = {
+          anchorX: (x + patchSize / 2) / SOURCE_SIZE,
+          anchorY: (y + patchSize / 2) / SOURCE_SIZE,
+          score
+        };
+      }
+    }
+  }
+
+  return best;
+}
+
+function resolvePortalSettings(parentCanvas, childCanvas, settings) {
+  if (!settings.autoAnchor) return settings;
+
+  const anchor = findAutoAnchor(parentCanvas, childCanvas, settings);
+  return {
+    ...settings,
+    anchorX: anchor.anchorX,
+    anchorY: anchor.anchorY
   };
 }
 
@@ -474,7 +604,11 @@ function buildMicroCanvas(parentCanvas, childCanvas, settings) {
 function getTransition(from, to, settings) {
   const key = transitionKey(from.id, to.id, settings);
   if (!state.transitions.has(key)) {
-    state.transitions.set(key, buildMicroCanvas(from.canvas, to.canvas, settings));
+    const portalSettings = resolvePortalSettings(from.canvas, to.canvas, settings);
+    state.transitions.set(key, {
+      canvas: buildMicroCanvas(from.canvas, to.canvas, portalSettings),
+      settings: portalSettings
+    });
   }
   return state.transitions.get(key);
 }
@@ -484,18 +618,20 @@ function drawTransition(from, to, t, settings) {
   const size = previewCanvas.width;
   const sourceSize = SOURCE_SIZE;
   const eased = easeInOutCubic(t);
-  const patchSize = sourceSize * settings.patch;
-  const patchX = clamp(sourceSize * settings.anchorX - patchSize / 2, 0, sourceSize - patchSize);
-  const patchY = clamp(sourceSize * settings.anchorY - patchSize / 2, 0, sourceSize - patchSize);
+  const transition = getTransition(from, to, settings);
+  const portalSettings = transition.settings;
+  const patchSize = sourceSize * portalSettings.patch;
+  const patchX = clamp(sourceSize * portalSettings.anchorX - patchSize / 2, 0, sourceSize - patchSize);
+  const patchY = clamp(sourceSize * portalSettings.anchorY - patchSize / 2, 0, sourceSize - patchSize);
   const patchCenterX = patchX + patchSize / 2;
   const patchCenterY = patchY + patchSize / 2;
-  const viewSize = sourceSize * Math.pow(settings.patch, eased);
+  const viewSize = sourceSize * Math.pow(portalSettings.patch, eased);
   const viewCenterX = lerp(sourceSize / 2, patchCenterX, eased);
   const viewCenterY = lerp(sourceSize / 2, patchCenterY, eased);
   const viewX = viewCenterX - viewSize / 2;
   const viewY = viewCenterY - viewSize / 2;
   const scale = size / viewSize;
-  const micro = getTransition(from, to, settings);
+  const micro = transition.canvas;
   const reveal = smoothstep(0.58, 0.96, t);
   const glow = 1 - smoothstep(0.2, 0.72, t);
 
@@ -756,6 +892,7 @@ timelineInput.addEventListener("input", () => {
 
 controls.forEach((control) => {
   control.addEventListener("input", () => {
+    syncAnchorMode();
     if (control === sizeInput) setCanvasSize(Number(sizeInput.value));
     if (
       control !== sizeInput &&
@@ -770,9 +907,14 @@ controls.forEach((control) => {
 });
 
 setCanvasSize(Number(sizeInput.value));
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get("auto") === "1") {
+  autoAnchorInput.checked = true;
+}
+syncAnchorMode();
 updateStatus();
 drawCurrentFrame();
-if (new URLSearchParams(window.location.search).get("sample") === "1") {
+if (urlParams.get("sample") === "1") {
   createSampleSet();
 }
 requestAnimationFrame(tick);

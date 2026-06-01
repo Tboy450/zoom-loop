@@ -56,8 +56,11 @@ Controls how fast the preview and WebM export move through each recursive portal
 `Patch size`
 Changes how large the hidden portal is inside the current image.
 
+`Auto place`
+Turns on automatic portal placement. The app scans the current photo and chooses the area whose color, brightness, and contrast best match the next photo. This can choose off-center zoom points.
+
 `Anchor X` and `Anchor Y`
-Move the portal left/right and up/down inside the current image.
+Move the portal left/right and up/down inside the current image when `Auto place` is off.
 
 `Color bind`
 Controls how strongly the hidden photo borrows color from the parent image. Higher values make the hidden photo blend more into the pixels around it.
@@ -91,6 +94,7 @@ WebM recording depends on your browser. If recording does not work, try Microsof
 - Put visually similar photos next to each other for smoother transitions.
 - Put very different photos next to each other for a more surreal jump.
 - If the hidden portal is too obvious, increase `Color bind`, `Sample blend`, or `Pixel grain`.
+- If the center zoom is boring, turn on `Auto place` to let the app search for a better off-center match.
 - If the zoom feels too slow or too fast, adjust `Zoom speed` first.
 
 ## Troubleshooting
