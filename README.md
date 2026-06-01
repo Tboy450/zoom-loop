@@ -68,6 +68,12 @@ Controls how strongly the hidden photo borrows color from the parent image. High
 `Sample blend`
 Softens how the hidden image is sampled and fades the portal edge into the parent image. Raise this when the hidden image looks pasted on or too harsh.
 
+`Edge blend`
+Adds an extended feather around the portal. The feather gets wider as the portal grows on screen, which helps hide the square edge late in the zoom.
+
+`Shape morph`
+Starts the portal feather as a more circular frame, then lets it become rectangular as it grows to fit the full image.
+
 `Pixel grain`
 Makes the hidden portal more blocky and pixel-like before the zoom reveals it.
 
@@ -93,7 +99,7 @@ WebM recording depends on your browser. If recording does not work, try Microsof
 - Square images work best, but the app will crop rectangular photos into a square.
 - Put visually similar photos next to each other for smoother transitions.
 - Put very different photos next to each other for a more surreal jump.
-- If the hidden portal is too obvious, increase `Color bind`, `Sample blend`, or `Pixel grain`.
+- If the hidden portal is too obvious, increase `Color bind`, `Sample blend`, `Edge blend`, or `Pixel grain`.
 - If the center zoom is boring, turn on `Auto place` to let the app search for a better off-center match.
 - If the zoom feels too slow or too fast, adjust `Zoom speed` first.
 

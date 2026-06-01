@@ -26,6 +26,8 @@ const anchorXInput = document.querySelector("#anchorXInput");
 const anchorYInput = document.querySelector("#anchorYInput");
 const bindInput = document.querySelector("#bindInput");
 const sampleBlendInput = document.querySelector("#sampleBlendInput");
+const edgeBlendInput = document.querySelector("#edgeBlendInput");
+const shapeMorphInput = document.querySelector("#shapeMorphInput");
 const grainInput = document.querySelector("#grainInput");
 const symmetryInput = document.querySelector("#symmetryInput");
 const alignmentInput = document.querySelector("#alignmentInput");
@@ -44,6 +46,8 @@ const state = {
   dragDepth: 0
 };
 
+const featherMaskCache = new Map();
+
 const controls = [
   sizeInput,
   framesInput,
@@ -55,6 +59,8 @@ const controls = [
   anchorYInput,
   bindInput,
   sampleBlendInput,
+  edgeBlendInput,
+  shapeMorphInput,
   grainInput,
   symmetryInput,
   alignmentInput
@@ -134,6 +140,8 @@ function getSettings() {
     anchorY: Number(anchorYInput.value) / 100,
     bind: Number(bindInput.value) / 100,
     sampleBlend: Number(sampleBlendInput.value) / 100,
+    edgeBlend: Number(edgeBlendInput.value) / 100,
+    shapeMorph: Number(shapeMorphInput.value) / 100,
     grain: Number(grainInput.value) / 100,
     symmetry: Number(symmetryInput.value),
     alignment: Number(alignmentInput.value) / 360
@@ -154,6 +162,8 @@ function transitionKey(fromId, toId, settings) {
     settings.anchorY.toFixed(3),
     settings.bind.toFixed(3),
     settings.sampleBlend.toFixed(3),
+    settings.edgeBlend.toFixed(3),
+    settings.shapeMorph.toFixed(3),
     settings.grain.toFixed(3),
     settings.symmetry,
     settings.alignment.toFixed(3)
@@ -587,7 +597,7 @@ function buildMicroCanvas(parentCanvas, childCanvas, settings) {
       const noise = ((x * 13 + y * 17) % 11) / 10 - 0.5;
       const dither = noise * settings.grain * (1 - settings.sampleBlend * 0.55) * 22;
       const edgeDistance = Math.min(x, y, MICRO_SIZE - 1 - x, MICRO_SIZE - 1 - y) / MICRO_SIZE;
-      const edgeWidth = 0.012 + settings.sampleBlend * 0.16;
+      const edgeWidth = 0.012 + settings.sampleBlend * 0.12 + settings.edgeBlend * 0.18;
       const edgeBlend = smoothstep(0, edgeWidth, edgeDistance);
 
       result.data[index] = clamp(lerp(localPr, lerp(cr, boundR, bind) + dither, edgeBlend), 0, 255);
@@ -599,6 +609,167 @@ function buildMicroCanvas(parentCanvas, childCanvas, settings) {
 
   outputCtx.putImageData(result, 0, 0);
   return output;
+}
+
+function getFeatherMask(layerSize, featherSize, roundness) {
+  const safeLayerSize = Math.max(1, Math.round(layerSize));
+  const safeFeatherSize = Math.max(1, Math.round(featherSize));
+  const safeRoundness = Math.round(clamp(roundness, 0, 1) * 20) / 20;
+  const key = `${safeLayerSize}:${safeFeatherSize}:${safeRoundness}`;
+
+  if (featherMaskCache.has(key)) {
+    return featherMaskCache.get(key);
+  }
+
+  if (featherMaskCache.size > 80) {
+    featherMaskCache.clear();
+  }
+
+  const mask = makeCanvas(safeLayerSize, safeLayerSize);
+  const maskCtx = mask.getContext("2d");
+  const imageData = maskCtx.createImageData(safeLayerSize, safeLayerSize);
+  const center = (safeLayerSize - 1) / 2;
+  const radius = safeLayerSize / 2;
+
+  for (let y = 0; y < safeLayerSize; y++) {
+    for (let x = 0; x < safeLayerSize; x++) {
+      const index = (y * safeLayerSize + x) * 4;
+      const rectDistance = Math.min(x, y, safeLayerSize - 1 - x, safeLayerSize - 1 - y);
+      const dx = x - center;
+      const dy = y - center;
+      const circleDistance = radius - Math.sqrt(dx * dx + dy * dy);
+      const rectAlpha = smoothstep(0, safeFeatherSize, rectDistance);
+      const circleAlpha = smoothstep(0, safeFeatherSize, circleDistance);
+      const alpha = lerp(rectAlpha, circleAlpha, safeRoundness) * 255;
+
+      imageData.data[index] = 255;
+      imageData.data[index + 1] = 255;
+      imageData.data[index + 2] = 255;
+      imageData.data[index + 3] = alpha;
+    }
+  }
+
+  maskCtx.putImageData(imageData, 0, 0);
+  featherMaskCache.set(key, mask);
+  return mask;
+}
+
+function getCenterMask(layerSize, inset, innerSize, fadeSize, roundness) {
+  const safeLayerSize = Math.max(1, Math.round(layerSize));
+  const safeInset = Math.round(inset);
+  const safeInnerSize = Math.max(1, Math.round(innerSize));
+  const safeFadeSize = Math.max(1, Math.round(fadeSize));
+  const safeRoundness = Math.round(clamp(roundness, 0, 1) * 20) / 20;
+  const key = `center:${safeLayerSize}:${safeInset}:${safeInnerSize}:${safeFadeSize}:${safeRoundness}`;
+
+  if (featherMaskCache.has(key)) {
+    return featherMaskCache.get(key);
+  }
+
+  if (featherMaskCache.size > 80) {
+    featherMaskCache.clear();
+  }
+
+  const mask = makeCanvas(safeLayerSize, safeLayerSize);
+  const maskCtx = mask.getContext("2d");
+  const imageData = maskCtx.createImageData(safeLayerSize, safeLayerSize);
+  const max = safeInset + safeInnerSize - 1;
+  const center = safeInset + (safeInnerSize - 1) / 2;
+  const radius = safeInnerSize / 2;
+
+  for (let y = 0; y < safeLayerSize; y++) {
+    for (let x = 0; x < safeLayerSize; x++) {
+      const index = (y * safeLayerSize + x) * 4;
+      let alpha = 0;
+
+      if (x >= safeInset && x <= max && y >= safeInset && y <= max) {
+        const rectDistance = Math.min(x - safeInset, y - safeInset, max - x, max - y);
+        const dx = x - center;
+        const dy = y - center;
+        const circleDistance = radius - Math.sqrt(dx * dx + dy * dy);
+        const rectAlpha = smoothstep(0, safeFadeSize, rectDistance);
+        const circleAlpha = smoothstep(0, safeFadeSize, circleDistance);
+        alpha = lerp(rectAlpha, circleAlpha, safeRoundness) * 255;
+      }
+
+      imageData.data[index] = 255;
+      imageData.data[index + 1] = 255;
+      imageData.data[index + 2] = 255;
+      imageData.data[index + 3] = alpha;
+    }
+  }
+
+  maskCtx.putImageData(imageData, 0, 0);
+  featherMaskCache.set(key, mask);
+  return mask;
+}
+
+function drawHardPortal(ctx, micro, childCanvas, patchX, patchY, patchSize, reveal) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(patchX, patchY, patchSize, patchSize);
+  ctx.clip();
+  ctx.drawImage(micro, patchX, patchY, patchSize, patchSize);
+  if (reveal > 0) {
+    ctx.globalAlpha = reveal;
+    ctx.drawImage(childCanvas, patchX, patchY, patchSize, patchSize);
+  }
+  ctx.restore();
+}
+
+function drawFeatheredPortal(ctx, micro, childCanvas, patchX, patchY, patchSize, reveal, settings, portalCoverage) {
+  const edgeStrength = settings.edgeBlend;
+  const growth = smoothstep(0.28, 0.92, portalCoverage);
+  const roundness = settings.shapeMorph * (1 - smoothstep(0.48, 0.98, portalCoverage));
+  const feather = patchSize * edgeStrength * lerp(0.1, 0.78, growth);
+
+  if (feather < 1) {
+    drawHardPortal(ctx, micro, childCanvas, patchX, patchY, patchSize, reveal);
+    return;
+  }
+
+  const layerSourceSize = patchSize + feather * 2;
+  const layerSize = Math.max(8, Math.round(layerSourceSize));
+  const innerSize = Math.max(2, (patchSize / layerSourceSize) * layerSize);
+  const inset = (layerSize - innerSize) / 2;
+  const layer = makeCanvas(layerSize, layerSize);
+  const layerCtx = layer.getContext("2d");
+
+  layerCtx.imageSmoothingEnabled = true;
+  layerCtx.drawImage(micro, 0, 0, layerSize, layerSize);
+  if (reveal > 0) {
+    layerCtx.globalAlpha = reveal;
+    layerCtx.drawImage(childCanvas, 0, 0, layerSize, layerSize);
+    layerCtx.globalAlpha = 1;
+  }
+
+  layerCtx.globalCompositeOperation = "destination-in";
+  layerCtx.drawImage(getFeatherMask(layerSize, inset, roundness), 0, 0);
+  layerCtx.globalCompositeOperation = "source-over";
+
+  const exactLayer = makeCanvas(layerSize, layerSize);
+  const exactCtx = exactLayer.getContext("2d");
+  const centerFade = innerSize * lerp(0.1, 0.28, edgeStrength);
+
+  exactCtx.imageSmoothingEnabled = true;
+  exactCtx.drawImage(micro, inset, inset, innerSize, innerSize);
+  if (reveal > 0) {
+    exactCtx.globalAlpha = reveal;
+    exactCtx.drawImage(childCanvas, inset, inset, innerSize, innerSize);
+    exactCtx.globalAlpha = 1;
+  }
+  exactCtx.globalCompositeOperation = "destination-in";
+  exactCtx.drawImage(getCenterMask(layerSize, inset, innerSize, centerFade, roundness), 0, 0);
+  exactCtx.globalCompositeOperation = "source-over";
+  layerCtx.drawImage(exactLayer, 0, 0);
+
+  ctx.drawImage(
+    layer,
+    patchX - feather,
+    patchY - feather,
+    layerSourceSize,
+    layerSourceSize
+  );
 }
 
 function getTransition(from, to, settings) {
@@ -632,8 +803,11 @@ function drawTransition(from, to, t, settings) {
   const viewY = viewCenterY - viewSize / 2;
   const scale = size / viewSize;
   const micro = transition.canvas;
-  const reveal = smoothstep(0.58, 0.96, t);
-  const glow = 1 - smoothstep(0.2, 0.72, t);
+  const portalCoverage = clamp(patchSize / viewSize, 0, 1);
+  const revealStart = lerp(0.58, 0.42, portalSettings.edgeBlend);
+  const revealEnd = lerp(0.96, 0.84, portalSettings.edgeBlend);
+  const reveal = smoothstep(revealStart, revealEnd, t);
+  const glow = (1 - portalSettings.edgeBlend * 0.75) * (1 - smoothstep(0.2, 0.72, t));
 
   ctx.save();
   ctx.fillStyle = "#050607";
@@ -644,16 +818,17 @@ function drawTransition(from, to, t, settings) {
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(from.canvas, 0, 0, sourceSize, sourceSize);
 
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(patchX, patchY, patchSize, patchSize);
-  ctx.clip();
-  ctx.drawImage(micro, patchX, patchY, patchSize, patchSize);
-  if (reveal > 0) {
-    ctx.globalAlpha = reveal;
-    ctx.drawImage(to.canvas, patchX, patchY, patchSize, patchSize);
-  }
-  ctx.restore();
+  drawFeatheredPortal(
+    ctx,
+    micro,
+    to.canvas,
+    patchX,
+    patchY,
+    patchSize,
+    reveal,
+    portalSettings,
+    portalCoverage
+  );
 
   if (glow > 0.01) {
     ctx.strokeStyle = `rgba(55, 192, 170, ${0.24 * glow})`;
@@ -910,6 +1085,13 @@ setCanvasSize(Number(sizeInput.value));
 const urlParams = new URLSearchParams(window.location.search);
 if (urlParams.get("auto") === "1") {
   autoAnchorInput.checked = true;
+}
+if (urlParams.has("progress")) {
+  const initialProgress = Number(urlParams.get("progress"));
+  if (Number.isFinite(initialProgress)) {
+    state.progress = clamp(initialProgress, 0, 1);
+    timelineInput.value = String(Math.round(state.progress * 1000));
+  }
 }
 syncAnchorMode();
 updateStatus();
