@@ -18,14 +18,18 @@ const timeReadout = document.querySelector("#timeReadout");
 const sizeInput = document.querySelector("#sizeInput");
 const framesInput = document.querySelector("#framesInput");
 const fpsInput = document.querySelector("#fpsInput");
+const zoomRateInput = document.querySelector("#zoomRateInput");
 const patchInput = document.querySelector("#patchInput");
 const anchorXInput = document.querySelector("#anchorXInput");
 const anchorYInput = document.querySelector("#anchorYInput");
 const bindInput = document.querySelector("#bindInput");
 const grainInput = document.querySelector("#grainInput");
+const symmetryInput = document.querySelector("#symmetryInput");
+const alignmentInput = document.querySelector("#alignmentInput");
 
 const SOURCE_SIZE = 1024;
 const MICRO_SIZE = 640;
+const TAU = Math.PI * 2;
 
 const state = {
   images: [],
@@ -41,11 +45,14 @@ const controls = [
   sizeInput,
   framesInput,
   fpsInput,
+  zoomRateInput,
   patchInput,
   anchorXInput,
   anchorYInput,
   bindInput,
-  grainInput
+  grainInput,
+  symmetryInput,
+  alignmentInput
 ];
 
 function clamp(value, min, max) {
@@ -63,6 +70,10 @@ function easeInOutCubic(t) {
 function smoothstep(edge0, edge1, value) {
   const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
   return t * t * (3 - 2 * t);
+}
+
+function positiveModulo(value, divisor) {
+  return ((value % divisor) + divisor) % divisor;
 }
 
 function makeCanvas(width, height) {
@@ -111,12 +122,19 @@ function getSettings() {
     size: Number(sizeInput.value),
     frames: Number(framesInput.value),
     fps: Number(fpsInput.value),
+    zoomRate: Number(zoomRateInput.value) / 100,
     patch: Number(patchInput.value) / 100,
     anchorX: Number(anchorXInput.value) / 100,
     anchorY: Number(anchorYInput.value) / 100,
     bind: Number(bindInput.value) / 100,
-    grain: Number(grainInput.value) / 100
+    grain: Number(grainInput.value) / 100,
+    symmetry: Number(symmetryInput.value),
+    alignment: Number(alignmentInput.value) / 360
   };
+}
+
+function getTransitionFrames(settings) {
+  return Math.max(8, Math.round(settings.frames / Math.max(0.25, settings.zoomRate)));
 }
 
 function transitionKey(fromId, toId, settings) {
@@ -127,7 +145,9 @@ function transitionKey(fromId, toId, settings) {
     settings.anchorX.toFixed(3),
     settings.anchorY.toFixed(3),
     settings.bind.toFixed(3),
-    settings.grain.toFixed(3)
+    settings.grain.toFixed(3),
+    settings.symmetry,
+    settings.alignment.toFixed(3)
   ].join(":");
 }
 
@@ -307,6 +327,29 @@ function getParentPatchColor(parentCanvas, settings) {
   };
 }
 
+function getPortalSampleIndex(x, y, settings) {
+  const symmetry = Math.max(1, Math.round(settings.symmetry));
+  if (symmetry === 1) return (y * MICRO_SIZE + x) * 4;
+
+  const center = (MICRO_SIZE - 1) / 2;
+  const dx = x - center;
+  const dy = y - center;
+  const radius = Math.sqrt(dx * dx + dy * dy);
+  const sector = TAU / symmetry;
+  const alignment = settings.alignment * TAU;
+  let angle = positiveModulo(Math.atan2(dy, dx) - alignment, TAU);
+  let foldedAngle = positiveModulo(angle, sector);
+
+  if (foldedAngle > sector / 2) {
+    foldedAngle = sector - foldedAngle;
+  }
+
+  const sampleAngle = foldedAngle - sector / 4 + alignment;
+  const sampleX = clamp(Math.round(center + Math.cos(sampleAngle) * radius), 0, MICRO_SIZE - 1);
+  const sampleY = clamp(Math.round(center + Math.sin(sampleAngle) * radius), 0, MICRO_SIZE - 1);
+  return (sampleY * MICRO_SIZE + sampleX) * 4;
+}
+
 function buildMicroCanvas(parentCanvas, childCanvas, settings) {
   const sourceParent = makeCanvas(MICRO_SIZE, MICRO_SIZE);
   const sourceChild = makeCanvas(MICRO_SIZE, MICRO_SIZE);
@@ -336,9 +379,10 @@ function buildMicroCanvas(parentCanvas, childCanvas, settings) {
       const index = (y * MICRO_SIZE + x) * 4;
       const blockX = Math.floor(x / block) * block;
       const sampleIndex = (blockY * MICRO_SIZE + blockX) * 4;
-      const cr = childData.data[index];
-      const cg = childData.data[index + 1];
-      const cb = childData.data[index + 2];
+      const portalIndex = getPortalSampleIndex(x, y, settings);
+      const cr = childData.data[portalIndex];
+      const cg = childData.data[portalIndex + 1];
+      const cb = childData.data[portalIndex + 2];
       const pr = parentData.data[sampleIndex];
       const pg = parentData.data[sampleIndex + 1];
       const pb = parentData.data[sampleIndex + 2];
@@ -456,7 +500,7 @@ function tick(timestamp) {
 
   if (state.isPlaying && !state.isRecording && state.images.length > 1) {
     const settings = getSettings();
-    const loopMs = (settings.frames * state.images.length / settings.fps) * 1000;
+    const loopMs = (getTransitionFrames(settings) * state.images.length / settings.fps) * 1000;
     state.progress = (state.progress + delta / loopMs) % 1;
     timelineInput.value = String(Math.round(state.progress * 1000));
     drawCurrentFrame();
@@ -568,7 +612,7 @@ async function recordWebm() {
   });
 
   recorder.start();
-  const totalFrames = settings.frames * state.images.length;
+  const totalFrames = getTransitionFrames(settings) * state.images.length;
 
   for (let frame = 0; frame < totalFrames; frame++) {
     state.progress = frame / totalFrames;
@@ -650,7 +694,12 @@ timelineInput.addEventListener("input", () => {
 controls.forEach((control) => {
   control.addEventListener("input", () => {
     if (control === sizeInput) setCanvasSize(Number(sizeInput.value));
-    if (control !== sizeInput && control !== framesInput && control !== fpsInput) {
+    if (
+      control !== sizeInput &&
+      control !== framesInput &&
+      control !== fpsInput &&
+      control !== zoomRateInput
+    ) {
       invalidateTransitions();
     }
     drawCurrentFrame();
