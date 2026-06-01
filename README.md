@@ -1,6 +1,6 @@
 # Zoom Loop
 
-Zoom Loop is a browser-based prototype for making recursive zoom art from uploaded photos.
+Zoom Loop is an A.I. photo zoom loop prototype for making recursive zoom art from uploaded photos.
 Add two or more images, tune the microcosm placement and color binding, preview the loop, then export a still PNG or record a WebM clip.
 
 ## Run
