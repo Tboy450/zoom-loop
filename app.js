@@ -20,6 +20,7 @@ const autoSortButton = document.querySelector("#autoSortButton");
 const clearButton = document.querySelector("#clearButton");
 const timelineInput = document.querySelector("#timelineInput");
 const timeReadout = document.querySelector("#timeReadout");
+const autoTuneButton = document.querySelector("#autoTuneButton");
 const smoothDefaultsButton = document.querySelector("#smoothDefaultsButton");
 const portalPickButton = document.querySelector("#portalPickButton");
 const portalClearButton = document.querySelector("#portalClearButton");
@@ -656,6 +657,7 @@ function updateStatus() {
   pngButton.disabled = state.isRecording;
   webmButton.disabled = count < 2 || state.isRecording;
   autoSortButton.disabled = count < 3 || state.isRecording || state.isLoading;
+  autoTuneButton.disabled = state.isRecording || state.isLoading;
   portalPickButton.disabled = count < 2 || state.isRecording || state.isLoading;
   portalClearButton.disabled = count < 2 || state.isRecording || state.isLoading;
   syncPortalPickingUi();
@@ -714,6 +716,31 @@ function applySmoothDefaults() {
   syncAnchorMode();
   updateStatus();
   setPortalHelp("Smooth defaults loaded. Use Pick Portal for stubborn transitions.", "ok");
+  drawCurrentFrame();
+}
+
+function autoTuneLoop() {
+  if (state.isRecording || state.isLoading) return;
+
+  state.portalOverrides.clear();
+  applySmoothDefaults();
+
+  if (state.images.length >= 3) {
+    state.images = sortImagesBySimilarity(state.images);
+    state.progress = 0;
+    timelineInput.value = "0";
+    renderImageList();
+  }
+
+  invalidateTransitions();
+  updateStatus();
+  setUploadHelp(
+    state.images.length >= 3
+      ? `Auto tuned and sorted ${state.images.length} images.`
+      : "Auto tuned smooth transition settings.",
+    "ok"
+  );
+  setPortalHelp("Auto Tune applied: smooth defaults, safer auto placement, and no old picked portals.", "ok");
   drawCurrentFrame();
 }
 
@@ -973,6 +1000,19 @@ function getPatchSignature(ctx, x, y, size) {
   return summarizePixels(data, size, size, step);
 }
 
+function getSurroundingSignature(ctx, x, y, size) {
+  const ring = Math.max(12, Math.round(size * 0.34));
+  const outerX = clamp(x - ring, 0, SOURCE_SIZE - 1);
+  const outerY = clamp(y - ring, 0, SOURCE_SIZE - 1);
+  const outerMaxX = clamp(x + size + ring, 1, SOURCE_SIZE);
+  const outerMaxY = clamp(y + size + ring, 1, SOURCE_SIZE);
+  const outerW = Math.max(1, outerMaxX - outerX);
+  const outerH = Math.max(1, outerMaxY - outerY);
+  const data = ctx.getImageData(outerX, outerY, outerW, outerH).data;
+  const step = Math.max(4, Math.floor(Math.max(outerW, outerH) / 28));
+  return summarizePixels(data, outerW, outerH, step);
+}
+
 function scorePatchSignature(patchSignature, targetSignature) {
   const red = (patchSignature.r - targetSignature.r) / 255;
   const green = (patchSignature.g - targetSignature.g) / 255;
@@ -990,13 +1030,54 @@ function scorePatchSignature(patchSignature, targetSignature) {
   );
 }
 
+function getAutoAnchorPenalty(anchorX, anchorY, patchRatio) {
+  const edgeDistance = Math.min(anchorX, anchorY, 1 - anchorX, 1 - anchorY);
+  const softSafeEdge = Math.max(0.18, patchRatio * 0.82);
+  const hardSafeEdge = Math.max(0.1, patchRatio * 0.55);
+  const edgePenalty = 1 - smoothstep(hardSafeEdge, softSafeEdge, edgeDistance);
+  const dx = anchorX - 0.5;
+  const dy = anchorY - 0.5;
+  const centerDistance = Math.sqrt(dx * dx + dy * dy) / Math.SQRT1_2;
+  const driftPenalty = smoothstep(0.38, 0.72, centerDistance);
+
+  return edgePenalty * 0.74 + driftPenalty * 0.26;
+}
+
+function scoreAutoAnchorCandidate(parentCtx, x, y, patchSize, targetSignature, settings) {
+  const patchSignature = getPatchSignature(parentCtx, x, y, patchSize);
+  const surroundingSignature = getSurroundingSignature(parentCtx, x, y, patchSize);
+  const anchorX = (x + patchSize / 2) / SOURCE_SIZE;
+  const anchorY = (y + patchSize / 2) / SOURCE_SIZE;
+  const patchRatio = patchSize / SOURCE_SIZE;
+  const directMatch = scorePatchSignature(patchSignature, targetSignature);
+  const surroundingMatch = scorePatchSignature(surroundingSignature, targetSignature);
+  const localBlend = scorePatchSignature(patchSignature, surroundingSignature);
+  const framingPenalty = getAutoAnchorPenalty(anchorX, anchorY, patchRatio);
+  const contrastFloor = targetSignature.contrast * 0.38;
+  const flatPenalty = patchSignature.contrast < contrastFloor
+    ? (contrastFloor - patchSignature.contrast) / Math.max(12, contrastFloor)
+    : 0;
+
+  return (
+    directMatch * 0.48 +
+    surroundingMatch * 0.24 +
+    localBlend * 0.1 +
+    framingPenalty * 0.26 +
+    flatPenalty * 0.1
+  );
+}
+
 function findAutoAnchor(parentCanvas, childCanvas, settings) {
   const parentCtx = parentCanvas.getContext("2d", { willReadFrequently: true });
   const targetSignature = getCanvasSignature(childCanvas);
   const patchSize = Math.max(16, Math.round(SOURCE_SIZE * settings.patch));
-  const minCenter = patchSize / 2;
-  const maxCenter = SOURCE_SIZE - patchSize / 2;
-  const gridSize = 11;
+  const patchRatio = patchSize / SOURCE_SIZE;
+  const safeMargin = Math.max(0.2, patchRatio * 0.88);
+  const minCenter = Math.max(patchSize / 2, SOURCE_SIZE * safeMargin);
+  const maxCenter = Math.min(SOURCE_SIZE - patchSize / 2, SOURCE_SIZE * (1 - safeMargin));
+  const scanMinCenter = minCenter < maxCenter ? minCenter : patchSize / 2;
+  const scanMaxCenter = minCenter < maxCenter ? maxCenter : SOURCE_SIZE - patchSize / 2;
+  const gridSize = 13;
   let best = {
     anchorX: settings.anchorX,
     anchorY: settings.anchorY,
@@ -1004,13 +1085,12 @@ function findAutoAnchor(parentCanvas, childCanvas, settings) {
   };
 
   for (let gridY = 0; gridY < gridSize; gridY++) {
-    const centerY = lerp(minCenter, maxCenter, gridY / (gridSize - 1));
+    const centerY = lerp(scanMinCenter, scanMaxCenter, gridY / (gridSize - 1));
     for (let gridX = 0; gridX < gridSize; gridX++) {
-      const centerX = lerp(minCenter, maxCenter, gridX / (gridSize - 1));
+      const centerX = lerp(scanMinCenter, scanMaxCenter, gridX / (gridSize - 1));
       const x = clamp(Math.round(centerX - patchSize / 2), 0, SOURCE_SIZE - patchSize);
       const y = clamp(Math.round(centerY - patchSize / 2), 0, SOURCE_SIZE - patchSize);
-      const patchSignature = getPatchSignature(parentCtx, x, y, patchSize);
-      const score = scorePatchSignature(patchSignature, targetSignature);
+      const score = scoreAutoAnchorCandidate(parentCtx, x, y, patchSize, targetSignature, settings);
 
       if (score < best.score) {
         best = {
@@ -1018,6 +1098,31 @@ function findAutoAnchor(parentCanvas, childCanvas, settings) {
           anchorY: (y + patchSize / 2) / SOURCE_SIZE,
           score
         };
+      }
+    }
+  }
+
+  const refineStep = Math.max(4, Math.round(patchSize * 0.22));
+  for (let pass = 0; pass < 2; pass++) {
+    const step = Math.max(2, Math.round(refineStep / (pass + 1)));
+    const baseX = best.anchorX * SOURCE_SIZE;
+    const baseY = best.anchorY * SOURCE_SIZE;
+
+    for (let offsetY = -1; offsetY <= 1; offsetY++) {
+      for (let offsetX = -1; offsetX <= 1; offsetX++) {
+        const centerX = clamp(baseX + offsetX * step, patchSize / 2, SOURCE_SIZE - patchSize / 2);
+        const centerY = clamp(baseY + offsetY * step, patchSize / 2, SOURCE_SIZE - patchSize / 2);
+        const x = clamp(Math.round(centerX - patchSize / 2), 0, SOURCE_SIZE - patchSize);
+        const y = clamp(Math.round(centerY - patchSize / 2), 0, SOURCE_SIZE - patchSize);
+        const score = scoreAutoAnchorCandidate(parentCtx, x, y, patchSize, targetSignature, settings);
+
+        if (score < best.score) {
+          best = {
+            anchorX: (x + patchSize / 2) / SOURCE_SIZE,
+            anchorY: (y + patchSize / 2) / SOURCE_SIZE,
+            score
+          };
+        }
       }
     }
   }
@@ -1774,6 +1879,7 @@ webmButton.addEventListener("click", recordWebm);
 sampleButton.addEventListener("click", createSampleSet);
 autoSortButton.addEventListener("click", autoSortImages);
 clearButton.addEventListener("click", clearImages);
+autoTuneButton.addEventListener("click", autoTuneLoop);
 smoothDefaultsButton.addEventListener("click", applySmoothDefaults);
 portalPickButton.addEventListener("click", togglePortalPickMode);
 portalClearButton.addEventListener("click", clearCurrentPortalPick);

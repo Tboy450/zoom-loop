@@ -90,6 +90,9 @@ Controls how fast the preview and WebM export move through each recursive portal
 `Smooth Defaults`
 Loads a safer starting setup for smoother transitions. Use this when the sliders start fighting each other or the portal looks distorted.
 
+`Auto Tune`
+Applies `Smooth Defaults`, clears old picked portal points, and sorts the image stack when there are three or more photos. This is the quickest way to let the app choose a cleaner automated setup.
+
 `Pick Portal`
 Lets you click the preview to choose the zoom point for the current photo-to-photo transition. Move the timeline to the transition you want, click `Pick Portal`, then click the spot in the preview where the next photo should hide.
 
@@ -103,7 +106,7 @@ Softens extreme slider combinations. Leave this on for cleaner transitions, or t
 Changes how large the hidden portal is inside the current image.
 
 `Auto place`
-Turns on automatic portal placement. The app scans the current photo and chooses the area whose color, brightness, and contrast best match the next photo. This can choose off-center zoom points.
+Turns on automatic portal placement. The app scans the current photo and chooses a safer inner area whose color, brightness, contrast, surrounding edge, and framing best match the next photo. This can still choose off-center zoom points, but it avoids edge-heavy picks that make the zoom feel out of frame.
 
 `Anchor X` and `Anchor Y`
 Move the portal left/right and up/down inside the current image when `Auto place` is off.
@@ -148,6 +151,7 @@ Video recording depends on your browser. If recording does not work, try Microso
 - Square images work best, but the app will crop rectangular photos into a square.
 - Put visually similar photos next to each other for smoother transitions.
 - Use `Auto Sort` first if you are not sure which order is best.
+- Use `Auto Tune` when you want the app to handle the order and smoother dial setup for you.
 - Use `Smooth Defaults` when the transition starts looking warped.
 - Use `Pick Portal` on only the transitions that still need a better zoom point.
 - Put very different photos next to each other for a more surreal jump.
