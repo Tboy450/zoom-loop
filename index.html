@@ -10,10 +10,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Zoom Loop">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="manifest.webmanifest?v=5">
+    <link rel="manifest" href="manifest.webmanifest?v=6">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
-    <link rel="stylesheet" href="styles.css?v=5">
+    <link rel="stylesheet" href="styles.css?v=6">
   </head>
   <body>
     <main class="app-shell">
@@ -99,6 +99,7 @@
           <h2>Recursive Portal</h2>
 
           <div class="tool-row">
+            <button id="autoCinematicButton" type="button">Auto Cinematic</button>
             <button id="autoTuneButton" type="button">Auto Tune</button>
             <button id="smoothDefaultsButton" type="button">Smooth Defaults</button>
             <button id="portalPickButton" type="button">Pick Portal</button>
@@ -110,6 +111,11 @@
           <label class="field toggle-field">
             <span>Smooth guard</span>
             <input id="smoothGuardInput" type="checkbox" checked>
+          </label>
+
+          <label class="field toggle-field">
+            <span>Cinematic mode</span>
+            <input id="cinematicModeInput" type="checkbox">
           </label>
 
           <label class="field slider-field">
@@ -170,6 +176,6 @@
       </aside>
     </main>
 
-    <script src="app.js?v=5"></script>
+    <script src="app.js?v=6"></script>
   </body>
 </html>

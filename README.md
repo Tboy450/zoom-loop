@@ -93,6 +93,9 @@ Loads a safer starting setup for smoother transitions. Use this when the sliders
 `Auto Tune`
 Applies `Smooth Defaults`, clears old picked portal points, and sorts the image stack when there are three or more photos. This is the quickest way to let the app choose a cleaner automated setup.
 
+`Auto Cinematic`
+Builds on `Auto Tune` and also turns on `Cinematic mode`, using softer reveal blur, per-pair color matching, and smoother camera motion for a more film-like transition.
+
 `Pick Portal`
 Lets you click the preview to choose the zoom point for the current photo-to-photo transition. Move the timeline to the transition you want, click `Pick Portal`, then click the spot in the preview where the next photo should hide.
 
@@ -101,6 +104,9 @@ Removes the clicked portal point for the current transition and goes back to `Au
 
 `Smooth guard`
 Softens extreme slider combinations. Leave this on for cleaner transitions, or turn it off when you want harsher pixel or symmetry effects.
+
+`Cinematic mode`
+Adds per-transition color matching, a blur-to-sharp reveal, and a gentler zoom path. This makes the transition feel less digital and more like a camera move.
 
 `Patch size`
 Changes how large the hidden portal is inside the current image.
@@ -152,6 +158,7 @@ Video recording depends on your browser. If recording does not work, try Microso
 - Put visually similar photos next to each other for smoother transitions.
 - Use `Auto Sort` first if you are not sure which order is best.
 - Use `Auto Tune` when you want the app to handle the order and smoother dial setup for you.
+- Use `Auto Cinematic` when you want the smoothest and most film-like default look.
 - Use `Smooth Defaults` when the transition starts looking warped.
 - Use `Pick Portal` on only the transitions that still need a better zoom point.
 - Put very different photos next to each other for a more surreal jump.
