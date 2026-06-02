@@ -46,6 +46,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MICRO_SIZE = 640;
 const TAU = Math.PI * 2;
+const ASSET_VERSION = "v5";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -259,7 +260,7 @@ function registerServiceWorker() {
   }
 
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch(() => {
+    navigator.serviceWorker.register(`./sw.js?${ASSET_VERSION}`).catch(() => {
       statusText.textContent = "Offline install unavailable";
     });
   });
