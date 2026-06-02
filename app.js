@@ -2,6 +2,7 @@
 
 const previewCanvas = document.querySelector("#previewCanvas");
 const previewCtx = previewCanvas.getContext("2d", { alpha: false });
+const canvasWrap = document.querySelector(".canvas-wrap");
 
 const fileInput = document.querySelector("#fileInput");
 const dropZone = document.querySelector("#dropZone");
@@ -15,14 +16,20 @@ const shareButton = document.querySelector("#shareButton");
 const pngButton = document.querySelector("#pngButton");
 const webmButton = document.querySelector("#webmButton");
 const sampleButton = document.querySelector("#sampleButton");
+const autoSortButton = document.querySelector("#autoSortButton");
 const clearButton = document.querySelector("#clearButton");
 const timelineInput = document.querySelector("#timelineInput");
 const timeReadout = document.querySelector("#timeReadout");
+const smoothDefaultsButton = document.querySelector("#smoothDefaultsButton");
+const portalPickButton = document.querySelector("#portalPickButton");
+const portalClearButton = document.querySelector("#portalClearButton");
+const portalHelp = document.querySelector("#portalHelp");
 
 const sizeInput = document.querySelector("#sizeInput");
 const framesInput = document.querySelector("#framesInput");
 const fpsInput = document.querySelector("#fpsInput");
 const zoomRateInput = document.querySelector("#zoomRateInput");
+const smoothGuardInput = document.querySelector("#smoothGuardInput");
 const patchInput = document.querySelector("#patchInput");
 const autoAnchorInput = document.querySelector("#autoAnchorInput");
 const anchorXInput = document.querySelector("#anchorXInput");
@@ -57,10 +64,12 @@ const HEIC_EXTENSIONS = new Set(["heic", "heif"]);
 const state = {
   images: [],
   transitions: new Map(),
+  portalOverrides: new Map(),
   progress: 0,
   isPlaying: false,
   isRecording: false,
   isLoading: false,
+  isPickingPortal: false,
   lastTime: 0,
   dragDepth: 0
 };
@@ -74,6 +83,7 @@ const controls = [
   framesInput,
   fpsInput,
   zoomRateInput,
+  smoothGuardInput,
   patchInput,
   autoAnchorInput,
   anchorXInput,
@@ -158,6 +168,7 @@ function getSettings() {
     frames: Number(framesInput.value),
     fps: Number(fpsInput.value),
     zoomRate: Number(zoomRateInput.value) / 100,
+    smoothGuard: smoothGuardInput.checked,
     patch: Number(patchInput.value) / 100,
     autoAnchor: autoAnchorInput.checked,
     anchorX: Number(anchorXInput.value) / 100,
@@ -176,14 +187,19 @@ function getTransitionFrames(settings) {
   return Math.max(8, Math.round(settings.frames / Math.max(0.25, settings.zoomRate)));
 }
 
-function transitionKey(fromId, toId, settings) {
+function transitionKey(fromId, toId, settings, override) {
+  const anchorX = override ? override.anchorX : settings.anchorX;
+  const anchorY = override ? override.anchorY : settings.anchorY;
+  const placementMode = override ? "picked" : settings.autoAnchor ? "auto" : "manual";
+
   return [
     fromId,
     toId,
+    settings.smoothGuard ? "guard" : "raw",
     settings.patch.toFixed(3),
-    settings.autoAnchor ? "auto" : "manual",
-    settings.anchorX.toFixed(3),
-    settings.anchorY.toFixed(3),
+    placementMode,
+    anchorX.toFixed(3),
+    anchorY.toFixed(3),
     settings.bind.toFixed(3),
     settings.sampleBlend.toFixed(3),
     settings.edgeBlend.toFixed(3),
@@ -196,6 +212,44 @@ function transitionKey(fromId, toId, settings) {
 
 function invalidateTransitions() {
   state.transitions.clear();
+}
+
+function getPairKey(fromId, toId) {
+  return `${fromId}->${toId}`;
+}
+
+function getPortalOverride(fromId, toId) {
+  return state.portalOverrides.get(getPairKey(fromId, toId));
+}
+
+function setPortalOverride(fromId, toId, anchorX, anchorY) {
+  state.portalOverrides.set(getPairKey(fromId, toId), {
+    anchorX: clamp(anchorX, 0.08, 0.92),
+    anchorY: clamp(anchorY, 0.08, 0.92)
+  });
+  invalidateTransitions();
+}
+
+function clearPortalOverride(fromId, toId) {
+  state.portalOverrides.delete(getPairKey(fromId, toId));
+  invalidateTransitions();
+}
+
+function purgePortalOverrides() {
+  const ids = new Set(state.images.map((image) => image.id));
+  for (const key of state.portalOverrides.keys()) {
+    const [fromId, toId] = key.split("->");
+    if (!ids.has(fromId) || !ids.has(toId)) {
+      state.portalOverrides.delete(key);
+    }
+  }
+}
+
+function setPortalHelp(message, tone = "") {
+  if (!portalHelp) return;
+  portalHelp.textContent = message;
+  portalHelp.classList.toggle("is-error", tone === "error");
+  portalHelp.classList.toggle("is-ok", tone === "ok");
 }
 
 function registerServiceWorker() {
@@ -566,6 +620,7 @@ function moveImage(index, direction) {
 function removeImage(index) {
   const [image] = state.images.splice(index, 1);
   if (image?.url?.startsWith("blob:")) URL.revokeObjectURL(image.url);
+  purgePortalOverrides();
   invalidateTransitions();
   renderImageList();
   updateStatus();
@@ -578,6 +633,8 @@ function clearImages() {
   });
   state.images = [];
   state.transitions.clear();
+  state.portalOverrides.clear();
+  state.isPickingPortal = false;
   state.progress = 0;
   timelineInput.value = "0";
   renderImageList();
@@ -598,7 +655,19 @@ function updateStatus() {
   shareButton.disabled = state.isRecording;
   pngButton.disabled = state.isRecording;
   webmButton.disabled = count < 2 || state.isRecording;
+  autoSortButton.disabled = count < 3 || state.isRecording || state.isLoading;
+  portalPickButton.disabled = count < 2 || state.isRecording || state.isLoading;
+  portalClearButton.disabled = count < 2 || state.isRecording || state.isLoading;
+  syncPortalPickingUi();
   syncPlaybackUi();
+}
+
+function syncPortalPickingUi() {
+  const canPick = state.images.length >= 2 && !state.isRecording && !state.isLoading;
+  if (!canPick) state.isPickingPortal = false;
+  portalPickButton.classList.toggle("is-active", state.isPickingPortal);
+  portalPickButton.textContent = state.isPickingPortal ? "Click Preview" : "Pick Portal";
+  canvasWrap.classList.toggle("is-picking", state.isPickingPortal);
 }
 
 function syncPlaybackUi() {
@@ -610,8 +679,10 @@ function syncPlaybackUi() {
 
 function togglePlayback() {
   if (state.images.length < 2 || state.isRecording) return;
+  state.isPickingPortal = false;
   state.isPlaying = !state.isPlaying;
   state.lastTime = 0;
+  syncPortalPickingUi();
   syncPlaybackUi();
 }
 
@@ -619,6 +690,94 @@ function syncAnchorMode() {
   const isAuto = autoAnchorInput.checked;
   anchorXInput.disabled = isAuto;
   anchorYInput.disabled = isAuto;
+}
+
+function applySmoothDefaults() {
+  framesInput.value = "120";
+  fpsInput.value = "30";
+  zoomRateInput.value = "82";
+  smoothGuardInput.checked = true;
+  patchInput.value = "16";
+  autoAnchorInput.checked = true;
+  anchorXInput.value = "50";
+  anchorYInput.value = "50";
+  bindInput.value = "78";
+  sampleBlendInput.value = "68";
+  edgeBlendInput.value = "76";
+  shapeMorphInput.value = "72";
+  grainInput.value = "16";
+  symmetryInput.value = "1";
+  alignmentInput.value = "0";
+
+  state.isPickingPortal = false;
+  invalidateTransitions();
+  syncAnchorMode();
+  updateStatus();
+  setPortalHelp("Smooth defaults loaded. Use Pick Portal for stubborn transitions.", "ok");
+  drawCurrentFrame();
+}
+
+function currentTransitionLabel(current) {
+  return `${current.segment + 1} -> ${(current.segment + 1) % state.images.length + 1}`;
+}
+
+function setProgressToSegmentStart(segment) {
+  const transitionCount = state.images.length;
+  if (transitionCount < 2) return;
+  state.progress = segment / transitionCount;
+  timelineInput.value = String(Math.round(state.progress * 1000));
+}
+
+function togglePortalPickMode() {
+  if (state.images.length < 2 || state.isRecording || state.isLoading) return;
+
+  const current = getCurrentLoopSegment();
+  if (!current) return;
+
+  state.isPlaying = false;
+  state.isPickingPortal = !state.isPickingPortal;
+
+  if (state.isPickingPortal) {
+    setProgressToSegmentStart(current.segment);
+    setPortalHelp(`Click the preview to set the portal for transition ${currentTransitionLabel(current)}.`);
+  } else {
+    setPortalHelp("");
+  }
+
+  syncPortalPickingUi();
+  syncPlaybackUi();
+  drawCurrentFrame();
+}
+
+function clearCurrentPortalPick() {
+  const current = getCurrentLoopSegment();
+  if (!current) return;
+
+  clearPortalOverride(current.from.id, current.to.id);
+  setPortalHelp(`Cleared picked portal for transition ${currentTransitionLabel(current)}.`, "ok");
+  drawCurrentFrame();
+}
+
+function handlePortalCanvasClick(event) {
+  if (!state.isPickingPortal || state.images.length < 2) return;
+
+  const current = getCurrentLoopSegment();
+  if (!current) return;
+
+  const settings = getSettings();
+  const transition = getTransition(current.from, current.to, settings);
+  const geometry = getTransitionGeometry(current.localT, transition.settings, previewCanvas.width);
+  const rect = previewCanvas.getBoundingClientRect();
+  const canvasX = (event.clientX - rect.left) * (previewCanvas.width / rect.width);
+  const canvasY = (event.clientY - rect.top) * (previewCanvas.height / rect.height);
+  const sourceX = clamp(geometry.viewX + canvasX / geometry.scale, 0, SOURCE_SIZE);
+  const sourceY = clamp(geometry.viewY + canvasY / geometry.scale, 0, SOURCE_SIZE);
+
+  setPortalOverride(current.from.id, current.to.id, sourceX / SOURCE_SIZE, sourceY / SOURCE_SIZE);
+  state.isPickingPortal = false;
+  setPortalHelp(`Portal set for transition ${currentTransitionLabel(current)}.`, "ok");
+  syncPortalPickingUi();
+  drawCurrentFrame();
 }
 
 function drawEmpty() {
@@ -732,6 +891,82 @@ function getCanvasSignature(canvas) {
   return summarizePixels(data, SOURCE_SIZE, SOURCE_SIZE, step);
 }
 
+function getImageSignature(image) {
+  if (!image.signature) {
+    image.signature = getCanvasSignature(image.canvas);
+  }
+  return image.signature;
+}
+
+function scoreImagePair(firstImage, secondImage) {
+  return scorePatchSignature(getImageSignature(firstImage), getImageSignature(secondImage));
+}
+
+function sortImagesBySimilarity(images) {
+  if (images.length < 3) return [...images];
+
+  const remaining = [...images];
+  let bestPair = [0, 1];
+  let bestScore = Infinity;
+
+  for (let i = 0; i < remaining.length; i++) {
+    for (let j = i + 1; j < remaining.length; j++) {
+      const score = scoreImagePair(remaining[i], remaining[j]);
+      if (score < bestScore) {
+        bestScore = score;
+        bestPair = [i, j];
+      }
+    }
+  }
+
+  const order = [remaining[bestPair[0]], remaining[bestPair[1]]];
+  remaining.splice(bestPair[1], 1);
+  remaining.splice(bestPair[0], 1);
+
+  while (remaining.length) {
+    let bestImageIndex = 0;
+    let bestInsertAfter = 0;
+    let bestCost = Infinity;
+
+    for (let imageIndex = 0; imageIndex < remaining.length; imageIndex++) {
+      const image = remaining[imageIndex];
+      for (let orderIndex = 0; orderIndex < order.length; orderIndex++) {
+        const previous = order[orderIndex];
+        const next = order[(orderIndex + 1) % order.length];
+        const cost =
+          scoreImagePair(previous, image) +
+          scoreImagePair(image, next) -
+          scoreImagePair(previous, next);
+
+        if (cost < bestCost) {
+          bestCost = cost;
+          bestImageIndex = imageIndex;
+          bestInsertAfter = orderIndex;
+        }
+      }
+    }
+
+    const [image] = remaining.splice(bestImageIndex, 1);
+    order.splice(bestInsertAfter + 1, 0, image);
+  }
+
+  return order;
+}
+
+function autoSortImages() {
+  if (state.images.length < 3 || state.isRecording || state.isLoading) return;
+  state.isPickingPortal = false;
+  state.images = sortImagesBySimilarity(state.images);
+  state.progress = 0;
+  timelineInput.value = "0";
+  invalidateTransitions();
+  renderImageList();
+  updateStatus();
+  setUploadHelp(`Auto sorted ${state.images.length} images by visual similarity.`, "ok");
+  setPortalHelp("Transitions now follow the closest color and contrast matches.", "ok");
+  drawCurrentFrame();
+}
+
 function getPatchSignature(ctx, x, y, size) {
   const data = ctx.getImageData(x, y, size, size).data;
   const step = Math.max(4, Math.floor(size / 24));
@@ -790,7 +1025,16 @@ function findAutoAnchor(parentCanvas, childCanvas, settings) {
   return best;
 }
 
-function resolvePortalSettings(parentCanvas, childCanvas, settings) {
+function resolvePortalSettings(parentCanvas, childCanvas, settings, override) {
+  if (override) {
+    return {
+      ...settings,
+      autoAnchor: false,
+      anchorX: override.anchorX,
+      anchorY: override.anchorY
+    };
+  }
+
   if (!settings.autoAnchor) return settings;
 
   const anchor = findAutoAnchor(parentCanvas, childCanvas, settings);
@@ -844,10 +1088,15 @@ function getPortalColor(x, y, childData, settings) {
   for (const [offsetX, offsetY, sampleWeight] of samples) {
     const sampleX = clamp(x + offsetX, 0, MICRO_SIZE - 1);
     const sampleY = clamp(y + offsetY, 0, MICRO_SIZE - 1);
-    const index = getPortalSampleIndex(sampleX, sampleY, settings);
-    r += childData.data[index] * sampleWeight;
-    g += childData.data[index + 1] * sampleWeight;
-    b += childData.data[index + 2] * sampleWeight;
+    const directIndex = (sampleY * MICRO_SIZE + sampleX) * 4;
+    const foldedIndex = getPortalSampleIndex(sampleX, sampleY, settings);
+    const symmetryStrength = settings.smoothGuard
+      ? clamp(0.42 + (settings.symmetry - 1) / 7 * 0.38, 0, 0.8)
+      : 1;
+
+    r += lerp(childData.data[directIndex], childData.data[foldedIndex], symmetryStrength) * sampleWeight;
+    g += lerp(childData.data[directIndex + 1], childData.data[foldedIndex + 1], symmetryStrength) * sampleWeight;
+    b += lerp(childData.data[directIndex + 2], childData.data[foldedIndex + 2], symmetryStrength) * sampleWeight;
     weight += sampleWeight;
   }
 
@@ -870,15 +1119,32 @@ function buildMicroCanvas(parentCanvas, childCanvas, settings) {
   const px = clamp(settings.anchorX * SOURCE_SIZE - patch / 2, 0, SOURCE_SIZE - patch);
   const py = clamp(settings.anchorY * SOURCE_SIZE - patch / 2, 0, SOURCE_SIZE - patch);
 
-  parentCtx.imageSmoothingEnabled = false;
+  const distortionLoad = clamp(
+    settings.grain * 0.45 +
+      settings.sampleBlend * 0.22 +
+      settings.edgeBlend * 0.16 +
+      ((settings.symmetry - 1) / 7) * 0.17,
+    0,
+    1
+  );
+  const grainStrength = settings.smoothGuard
+    ? settings.grain * lerp(1, 0.42, distortionLoad)
+    : settings.grain;
+  const bind = settings.smoothGuard
+    ? clamp(settings.bind + distortionLoad * 0.08, 0, 0.92)
+    : settings.bind;
+
+  parentCtx.imageSmoothingEnabled = settings.smoothGuard;
+  parentCtx.imageSmoothingQuality = "high";
   parentCtx.drawImage(parentCanvas, px, py, patch, patch, 0, 0, MICRO_SIZE, MICRO_SIZE);
+  childCtx.imageSmoothingEnabled = true;
+  childCtx.imageSmoothingQuality = "high";
   childCtx.drawImage(childCanvas, 0, 0, MICRO_SIZE, MICRO_SIZE);
 
   const parentData = parentCtx.getImageData(0, 0, MICRO_SIZE, MICRO_SIZE);
   const childData = childCtx.getImageData(0, 0, MICRO_SIZE, MICRO_SIZE);
   const result = outputCtx.createImageData(MICRO_SIZE, MICRO_SIZE);
-  const block = Math.max(1, Math.round(1 + settings.grain * 18));
-  const bind = settings.bind;
+  const block = Math.max(1, Math.round(1 + grainStrength * 18));
   const baseColor = getParentPatchColor(parentCanvas, settings);
 
   for (let y = 0; y < MICRO_SIZE; y++) {
@@ -894,9 +1160,9 @@ function buildMicroCanvas(parentCanvas, childCanvas, settings) {
       const localPr = parentData.data[index];
       const localPg = parentData.data[index + 1];
       const localPb = parentData.data[index + 2];
-      const pr = lerp(localPr, parentData.data[sampleIndex], settings.grain);
-      const pg = lerp(localPg, parentData.data[sampleIndex + 1], settings.grain);
-      const pb = lerp(localPb, parentData.data[sampleIndex + 2], settings.grain);
+      const pr = lerp(localPr, parentData.data[sampleIndex], grainStrength);
+      const pg = lerp(localPg, parentData.data[sampleIndex + 1], grainStrength);
+      const pb = lerp(localPb, parentData.data[sampleIndex + 2], grainStrength);
       const luma = (cr * 0.2126 + cg * 0.7152 + cb * 0.0722) / 255;
       const tintBoost = 0.48 + luma * (0.88 + settings.sampleBlend * 0.22);
       const chroma = 0.18 * (1 - settings.bind) * (1 - settings.sampleBlend * 0.45);
@@ -905,7 +1171,7 @@ function buildMicroCanvas(parentCanvas, childCanvas, settings) {
       const boundG = clamp(pg * tintBoost + baseColor.g * 0.08 + (cg - neutral) * chroma, 0, 255);
       const boundB = clamp(pb * tintBoost + baseColor.b * 0.08 + (cb - neutral) * chroma, 0, 255);
       const noise = ((x * 13 + y * 17) % 11) / 10 - 0.5;
-      const dither = noise * settings.grain * (1 - settings.sampleBlend * 0.55) * 22;
+      const dither = noise * grainStrength * (1 - settings.sampleBlend * 0.55) * 22;
       const edgeDistance = Math.min(x, y, MICRO_SIZE - 1 - x, MICRO_SIZE - 1 - y) / MICRO_SIZE;
       const edgeWidth = 0.012 + settings.sampleBlend * 0.12 + settings.edgeBlend * 0.18;
       const edgeBlend = smoothstep(0, edgeWidth, edgeDistance);
@@ -1083,9 +1349,10 @@ function drawFeatheredPortal(ctx, micro, childCanvas, patchX, patchY, patchSize,
 }
 
 function getTransition(from, to, settings) {
-  const key = transitionKey(from.id, to.id, settings);
+  const override = getPortalOverride(from.id, to.id);
+  const key = transitionKey(from.id, to.id, settings, override);
   if (!state.transitions.has(key)) {
-    const portalSettings = resolvePortalSettings(from.canvas, to.canvas, settings);
+    const portalSettings = resolvePortalSettings(from.canvas, to.canvas, settings, override);
     state.transitions.set(key, {
       canvas: buildMicroCanvas(from.canvas, to.canvas, portalSettings),
       settings: portalSettings
@@ -1094,13 +1361,25 @@ function getTransition(from, to, settings) {
   return state.transitions.get(key);
 }
 
-function drawTransition(from, to, t, settings) {
-  const ctx = previewCtx;
-  const size = previewCanvas.width;
+function getCurrentLoopSegment(progress = state.progress) {
+  const transitionCount = state.images.length;
+  if (transitionCount < 2) return null;
+
+  const loopProgress = ((progress % 1) + 1) % 1;
+  const rawSegment = loopProgress * transitionCount;
+  const segment = Math.min(transitionCount - 1, Math.floor(rawSegment));
+
+  return {
+    segment,
+    localT: rawSegment - segment,
+    from: state.images[segment],
+    to: state.images[(segment + 1) % transitionCount]
+  };
+}
+
+function getTransitionGeometry(t, portalSettings, targetSize = previewCanvas.width) {
   const sourceSize = SOURCE_SIZE;
   const eased = easeInOutCubic(t);
-  const transition = getTransition(from, to, settings);
-  const portalSettings = transition.settings;
   const patchSize = sourceSize * portalSettings.patch;
   const patchX = clamp(sourceSize * portalSettings.anchorX - patchSize / 2, 0, sourceSize - patchSize);
   const patchY = clamp(sourceSize * portalSettings.anchorY - patchSize / 2, 0, sourceSize - patchSize);
@@ -1111,9 +1390,51 @@ function drawTransition(from, to, t, settings) {
   const viewCenterY = lerp(sourceSize / 2, patchCenterY, eased);
   const viewX = viewCenterX - viewSize / 2;
   const viewY = viewCenterY - viewSize / 2;
-  const scale = size / viewSize;
+  const scale = targetSize / viewSize;
+
+  return {
+    patchSize,
+    patchX,
+    patchY,
+    patchCenterX,
+    patchCenterY,
+    viewSize,
+    viewX,
+    viewY,
+    scale
+  };
+}
+
+function drawPortalPickMarker(ctx, geometry) {
+  const x = (geometry.patchCenterX - geometry.viewX) * geometry.scale;
+  const y = (geometry.patchCenterY - geometry.viewY) * geometry.scale;
+  const radius = Math.max(11, previewCanvas.width * 0.018);
+
+  ctx.save();
+  ctx.lineWidth = Math.max(2, previewCanvas.width * 0.003);
+  ctx.strokeStyle = "rgba(55, 192, 170, 0.95)";
+  ctx.fillStyle = "rgba(55, 192, 170, 0.14)";
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, TAU);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x - radius * 1.6, y);
+  ctx.lineTo(x + radius * 1.6, y);
+  ctx.moveTo(x, y - radius * 1.6);
+  ctx.lineTo(x, y + radius * 1.6);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawTransition(from, to, t, settings) {
+  const ctx = previewCtx;
+  const size = previewCanvas.width;
+  const transition = getTransition(from, to, settings);
+  const portalSettings = transition.settings;
+  const geometry = getTransitionGeometry(t, portalSettings, size);
   const micro = transition.canvas;
-  const portalCoverage = clamp(patchSize / viewSize, 0, 1);
+  const portalCoverage = clamp(geometry.patchSize / geometry.viewSize, 0, 1);
   const revealStart = lerp(0.58, 0.42, portalSettings.edgeBlend);
   const revealEnd = lerp(0.96, 0.84, portalSettings.edgeBlend);
   const reveal = smoothstep(revealStart, revealEnd, t);
@@ -1122,19 +1443,19 @@ function drawTransition(from, to, t, settings) {
   ctx.save();
   ctx.fillStyle = "#050607";
   ctx.fillRect(0, 0, size, size);
-  ctx.scale(scale, scale);
-  ctx.translate(-viewX, -viewY);
+  ctx.scale(geometry.scale, geometry.scale);
+  ctx.translate(-geometry.viewX, -geometry.viewY);
 
   ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(from.canvas, 0, 0, sourceSize, sourceSize);
+  ctx.drawImage(from.canvas, 0, 0, SOURCE_SIZE, SOURCE_SIZE);
 
   drawFeatheredPortal(
     ctx,
     micro,
     to.canvas,
-    patchX,
-    patchY,
-    patchSize,
+    geometry.patchX,
+    geometry.patchY,
+    geometry.patchSize,
     reveal,
     portalSettings,
     portalCoverage
@@ -1142,11 +1463,15 @@ function drawTransition(from, to, t, settings) {
 
   if (glow > 0.01) {
     ctx.strokeStyle = `rgba(55, 192, 170, ${0.24 * glow})`;
-    ctx.lineWidth = Math.max(1, viewSize / size * 2);
-    ctx.strokeRect(patchX, patchY, patchSize, patchSize);
+    ctx.lineWidth = Math.max(1, geometry.viewSize / size * 2);
+    ctx.strokeRect(geometry.patchX, geometry.patchY, geometry.patchSize, geometry.patchSize);
   }
 
   ctx.restore();
+
+  if (state.isPickingPortal && !state.isRecording) {
+    drawPortalPickMarker(ctx, geometry);
+  }
 }
 
 function drawLoopFrame(progress) {
@@ -1163,15 +1488,10 @@ function drawLoopFrame(progress) {
     return;
   }
 
-  const transitionCount = state.images.length;
-  const loopProgress = ((progress % 1) + 1) % 1;
-  const rawSegment = loopProgress * transitionCount;
-  const segment = Math.min(transitionCount - 1, Math.floor(rawSegment));
-  const localT = rawSegment - segment;
-  const from = state.images[segment];
-  const to = state.images[(segment + 1) % state.images.length];
+  const current = getCurrentLoopSegment(progress);
+  if (!current) return;
 
-  drawTransition(from, to, localT, settings);
+  drawTransition(current.from, current.to, current.localT, settings);
 }
 
 function drawCurrentFrame() {
@@ -1452,10 +1772,17 @@ pngButton.addEventListener("click", downloadCanvasPng);
 shareButton.addEventListener("click", shareCurrentFrame);
 webmButton.addEventListener("click", recordWebm);
 sampleButton.addEventListener("click", createSampleSet);
+autoSortButton.addEventListener("click", autoSortImages);
 clearButton.addEventListener("click", clearImages);
+smoothDefaultsButton.addEventListener("click", applySmoothDefaults);
+portalPickButton.addEventListener("click", togglePortalPickMode);
+portalClearButton.addEventListener("click", clearCurrentPortalPick);
+previewCanvas.addEventListener("click", handlePortalCanvasClick);
 
 timelineInput.addEventListener("input", () => {
+  state.isPickingPortal = false;
   state.progress = Number(timelineInput.value) / 1000;
+  syncPortalPickingUi();
   drawCurrentFrame();
 });
 

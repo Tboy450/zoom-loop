@@ -131,6 +131,23 @@ h2 {
   min-width: 0;
 }
 
+.tool-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tool-row button {
+  min-width: 0;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+#portalPickButton.is-active {
+  border-color: rgba(55, 192, 170, 0.85);
+  background: #21312f;
+}
+
 .transport button:first-child {
   border-color: rgba(55, 192, 170, 0.7);
   background: #21312f;
@@ -144,6 +161,19 @@ h2 {
   place-items: center;
   position: relative;
   overflow: hidden;
+}
+
+.canvas-wrap.is-picking {
+  cursor: crosshair;
+}
+
+.canvas-wrap.is-picking #previewCanvas {
+  border-color: rgba(55, 192, 170, 0.85);
+}
+
+.canvas-wrap.is-picking .stage-play-button {
+  opacity: 0.12;
+  pointer-events: none;
 }
 
 #previewCanvas {

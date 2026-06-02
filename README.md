@@ -53,6 +53,8 @@ Use at least two images.
 3. The images appear in the `Image Stack` panel on the right.
 4. Use `Up`, `Dn`, and `X` to reorder or remove images.
 
+Click `Auto Sort` to let the app reorder three or more photos by similar color, brightness, contrast, and saturation. This usually makes the zoom loop easier to blend because each photo transitions into a more visually related next photo.
+
 The order matters:
 
 - Image 1 zooms into Image 2.
@@ -84,6 +86,18 @@ Controls the video frame rate for WebM export.
 Controls how fast the preview and WebM export move through each recursive portal.
 
 ## Recursive Portal Controls
+
+`Smooth Defaults`
+Loads a safer starting setup for smoother transitions. Use this when the sliders start fighting each other or the portal looks distorted.
+
+`Pick Portal`
+Lets you click the preview to choose the zoom point for the current photo-to-photo transition. Move the timeline to the transition you want, click `Pick Portal`, then click the spot in the preview where the next photo should hide.
+
+`Clear Pick`
+Removes the clicked portal point for the current transition and goes back to `Auto place` or the manual anchor sliders.
+
+`Smooth guard`
+Softens extreme slider combinations. Leave this on for cleaner transitions, or turn it off when you want harsher pixel or symmetry effects.
 
 `Patch size`
 Changes how large the hidden portal is inside the current image.
@@ -133,6 +147,9 @@ Video recording depends on your browser. If recording does not work, try Microso
 - Start with 3 to 6 photos.
 - Square images work best, but the app will crop rectangular photos into a square.
 - Put visually similar photos next to each other for smoother transitions.
+- Use `Auto Sort` first if you are not sure which order is best.
+- Use `Smooth Defaults` when the transition starts looking warped.
+- Use `Pick Portal` on only the transitions that still need a better zoom point.
 - Put very different photos next to each other for a more surreal jump.
 - If the hidden portal is too obvious, increase `Color bind`, `Sample blend`, `Edge blend`, or `Pixel grain`.
 - If the center zoom is boring, turn on `Auto place` to let the app search for a better off-center match.

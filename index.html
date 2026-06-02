@@ -57,6 +57,7 @@
 
         <div class="sample-row">
           <button id="sampleButton" type="button">Sample Set</button>
+          <button id="autoSortButton" type="button">Auto Sort</button>
           <button id="clearButton" type="button">Clear</button>
         </div>
 
@@ -96,6 +97,19 @@
 
         <section class="panel-section">
           <h2>Recursive Portal</h2>
+
+          <div class="tool-row">
+            <button id="smoothDefaultsButton" type="button">Smooth Defaults</button>
+            <button id="portalPickButton" type="button">Pick Portal</button>
+            <button id="portalClearButton" type="button">Clear Pick</button>
+          </div>
+
+          <p id="portalHelp" class="upload-help" aria-live="polite"></p>
+
+          <label class="field toggle-field">
+            <span>Smooth guard</span>
+            <input id="smoothGuardInput" type="checkbox" checked>
+          </label>
 
           <label class="field slider-field">
             <span>Patch size</span>
