@@ -131,48 +131,94 @@ const PhotoZoom = (() => {
     return { values, mean };
   }
 
+  function comparePatches(candidate, target) {
+    let pattern = 0;
+    let texture = 0;
+    let edges = 0;
+    let edgeCount = 0;
+    for (let i = 0; i < candidate.values.length; i++) {
+      const c = i % 3;
+      const a = candidate.values[i] - candidate.mean[c];
+      const b = target.values[i] - target.mean[c];
+      pattern += Math.abs(a - b);
+      texture += Math.abs(Math.abs(a) - Math.abs(b));
+      for (const offset of [3, 24]) {
+        if (offset === 3 ? Math.floor(i / 3) % 8 === 0 : i < 24) continue;
+        edges += Math.abs((candidate.values[i] - candidate.values[i - offset]) -
+          (target.values[i] - target.values[i - offset]));
+        edgeCount++;
+      }
+    }
+    const color = candidate.mean.reduce((sum, v, c) => sum + Math.abs(v - target.mean[c]), 0) / 3;
+    return (pattern * 0.5 + texture * 0.2) / candidate.values.length / 255 +
+      color / 255 * 0.22 + edges / edgeCount / 255 * 0.08;
+  }
+
   function findAnchor(parent, child, settings) {
     const parentData = analysis(parent);
-    const target = patchSamples(analysis(child), 0, 0, 1);
+    const childData = analysis(child);
+    const inset = (1 - FRAME) / 2;
+    const target = patchSamples(childData, inset, inset, FRAME);
+    const fullTarget = patchSamples(childData, 0, 0, 1);
     const p = settings.patch;
-    const margin = Math.max(0.16, p / 2 + 0.04);
-    let best = { anchorX: 0.5, anchorY: 0.5, score: Infinity };
-    const score = (cx, cy) => {
-      const candidate = patchSamples(parentData, cx - p / 2, cy - p / 2, p);
-      let pattern = 0;
-      let texture = 0;
-      let parentEnergy = 0;
-      for (let i = 0; i < candidate.values.length; i++) {
-        const c = i % 3;
-        const a = candidate.values[i] - candidate.mean[c];
-        const b = target.values[i] - target.mean[c];
-        // Compare structure after exposure/color offsets, not just averages.
-        pattern += Math.abs(a - b);
-        texture += Math.abs(Math.abs(a) - Math.abs(b));
-        parentEnergy += Math.abs(a);
+    // Search inside the visible crop, not the unseen edges of the source.
+    const margin = inset + p / 2 + 0.05;
+    const centralMargin = Math.max(0.32, margin);
+    const score = (anchorX, anchorY) => {
+      const x = anchorX - p / 2, y = anchorY - p / 2;
+      const candidate = patchSamples(parentData, x + p * inset, y + p * inset, p * FRAME);
+      const fullCandidate = patchSamples(parentData, x, y, p);
+      let boundary = 0;
+      for (let i = 0; i < 8; i++) {
+        const along = (i + 0.5) / 8;
+        const step = p / 16;
+        for (const edge of [0, 1]) {
+          for (let c = 0; c < 3; c++) {
+            boundary += Math.abs(sample(parentData, x + p * along, y + p * edge - step, c) -
+              sample(parentData, x + p * along, y + p * edge + step, c));
+            boundary += Math.abs(sample(parentData, x + p * edge - step, y + p * along, c) -
+              sample(parentData, x + p * edge + step, y + p * along, c));
+          }
+        }
       }
-      const color = candidate.mean.reduce((sum, v, c) => sum + Math.abs(v - target.mean[c]), 0) / 3;
-      const framing = Math.hypot(cx - 0.5, cy - 0.5);
-      const flat = 1 - smooth(3, 20, parentEnergy / candidate.values.length);
-      return (pattern * 0.55 + texture * 0.25) / candidate.values.length / 255 +
-        color / 255 * 0.22 + framing * 0.055 + flat * 0.025;
+      const match = comparePatches(candidate, target) * 0.75 +
+        comparePatches(fullCandidate, fullTarget) * 0.25 + boundary / (96 * 255) * 0.04;
+      return { anchorX, anchorY, match, score: match + Math.hypot(anchorX - 0.5, anchorY - 0.5) * 0.06 };
     };
-    const consider = (x, y) => {
-      const anchorX = clamp(x, margin, 1 - margin);
-      const anchorY = clamp(y, margin, 1 - margin);
-      const value = score(anchorX, anchorY);
-      if (value < best.score) best = { anchorX, anchorY, score: value };
-    };
-    for (let y = 0; y < 13; y++) {
-      for (let x = 0; x < 13; x++) consider(mix(margin, 1 - margin, x / 12), mix(margin, 1 - margin, y / 12));
-    }
-    for (const step of [0.025, 0.008]) {
-      const { anchorX, anchorY } = best;
-      for (let y = -1; y <= 1; y++) {
-        for (let x = -1; x <= 1; x++) consider(anchorX + x * step, anchorY + y * step);
+    const search = (limit) => {
+      let best = score(0.5, 0.5);
+      const consider = (x, y) => {
+        const candidate = score(clamp(x, limit, 1 - limit), clamp(y, limit, 1 - limit));
+        if (candidate.score < best.score) best = candidate;
+      };
+      for (let y = 0; y < 13; y++) {
+        for (let x = 0; x < 13; x++) consider(mix(limit, 1 - limit, x / 12), mix(limit, 1 - limit, y / 12));
       }
-    }
-    return best;
+      for (const step of [0.025, 0.008]) {
+        const { anchorX, anchorY } = best;
+        for (let y = -1; y <= 1; y++) {
+          for (let x = -1; x <= 1; x++) consider(anchorX + x * step, anchorY + y * step);
+        }
+      }
+      return best;
+    };
+    const central = search(centralMargin);
+    const wide = search(margin);
+    const offCenter = Math.min(wide.anchorX, wide.anchorY, 1 - wide.anchorX, 1 - wide.anchorY) < centralMargin;
+    const improvement = central.match - wide.match;
+    // Small score differences are not evidence that a long camera pan is better.
+    const useWide = wide.score < central.score &&
+      (!offCenter || improvement >= Math.max(0.025, central.match * 0.2));
+    const best = useWide ? wide : central;
+    return {
+      anchorX: best.anchorX,
+      anchorY: best.anchorY,
+      placement: {
+        mode: "auto",
+        reason: useWide && offCenter ? "stronger-match" : "balanced",
+        matchImprovement: useWide && offCenter ? improvement : 0
+      }
+    };
   }
 
   function rect(settings) {
@@ -194,7 +240,10 @@ const PhotoZoom = (() => {
     // Start/end on the same inset crop of every photo. The feather leaves the
     // screen before handoff, so there is never a need to expose a hard border.
     const view = FRAME * Math.pow(portal.size, time);
-    const centerT = smooth(0, 1, time);
+    // Steer with zoom progress: easing by elapsed time lets the shrinking
+    // viewport overtake an off-center target before the camera reaches it.
+    const zoomT = (1 - Math.pow(portal.size, time)) / (1 - portal.size);
+    const centerT = smooth(0, 1, zoomT);
     const centerX = mix(0.5, portal.x + portal.size / 2, centerT);
     const centerY = mix(0.5, portal.y + portal.size / 2, centerT);
     const viewX = clamp(centerX - view / 2, 0, 1 - view);
@@ -246,8 +295,14 @@ const PhotoZoom = (() => {
 
   function createTransition(parent, child, requested, override) {
     const settings = { ...requested };
+    let placement = { mode: override ? "picked" : "manual" };
     if (override) Object.assign(settings, override, { autoAnchor: false });
-    else if (settings.autoAnchor) Object.assign(settings, findAnchor(parent, child, settings));
+    else if (settings.autoAnchor) {
+      const anchor = findAnchor(parent, child, settings);
+      settings.anchorX = anchor.anchorX;
+      settings.anchorY = anchor.anchorY;
+      placement = anchor.placement;
+    }
     const portal = rect(settings);
     settings.anchorX = portal.x + portal.size / 2;
     settings.anchorY = portal.y + portal.size / 2;
@@ -317,7 +372,7 @@ const PhotoZoom = (() => {
     }
     ctx.putImageData(embedded, 0, 0);
     cutoutCtx.putImageData(mask, 0, 0);
-    return { settings, rect: portal, texture, cutout, extension: childExtension };
+    return { settings, rect: portal, texture, cutout, extension: childExtension, placement };
   }
 
   function layerAt(depth, projectedSize, outputSize) {

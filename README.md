@@ -6,7 +6,9 @@ Everything runs in your browser. Your photos are not uploaded to a server.
 
 The effect is built from the photos you add. Each pair gets a texture-aware insertion point, a small embedded version that borrows the surrounding photo's material, and a feather outside the image boundary. As the camera moves closer, the next photo's detail and original color emerge in the same place. Nested photos are carried through the handoff, including the last-to-first transition, with continuous zoom speed.
 
-Automatic placement is on by default, with a small patch, strong color binding, and no added grain. The camera uses the central 80% of each normalized square photo so the blend boundary passes outside the screen before the handoff. Very different subjects can still produce a visible change of scene; the compositor blends existing pixels and does not invent matching objects or scenery. Use `Pick Portal` if an automatic placement lands on an important subject.
+Automatic placement is on by default, with an embedded frame 8% of the photo width (down from 12%), strong color binding, and no added grain. The camera uses the central 80% of each normalized square photo so the blend boundary passes outside the screen before the handoff. Very different subjects can still produce a visible change of scene; the compositor blends existing pixels and does not invent matching objects or scenery. Use `Pick Portal` if an automatic placement lands on an important subject.
+
+Automatic zoom points now favor the central part of the visible frame. An off-center point must offer a substantially better match, not just a small color advantage. Steering follows the zoom so the destination stays in view instead of sliding offscreen halfway through. Manually picked points still take priority.
 
 ## Phone Install Link
 
@@ -116,7 +118,9 @@ Keeps the parent texture and color longer before the child photo emerges. Both m
 Changes how large the hidden portal is inside the current image.
 
 `Auto place`
-Scans the current photo for a region with similar color and spatial detail to the next photo. It compares small image patterns as well as averages and keeps the insertion inside the frame. Enabled by default.
+Compares color, texture, and edge direction at two scales, emphasizing the central crop of the next photo that will actually be visible. It also checks contrast around the insertion boundary and camera travel. Candidates stay inside the visible source crop, with room for the photo's size. The best central candidate wins unless an off-center candidate reduces the visual mismatch by at least 20% and an absolute score margin. On ambiguous or featureless photos, it favors staying centered.
+
+The placement readout explains the decision for the current transition and shows the point's location. It distinguishes a balanced automatic choice, a stronger off-center match, manual sliders, and a picked override. This is pixel-based matching, not face or object recognition; use `Pick Portal` to protect a particular subject.
 
 `Anchor X` and `Anchor Y`
 Move the portal left/right and up/down inside the current image when `Auto place` is off.
@@ -167,7 +171,7 @@ Video recording depends on your browser. If recording does not work, try Microso
 - Use `Pick Portal` on only the transitions that still need a better zoom point.
 - Put very different photos next to each other for a more surreal jump.
 - If the hidden portal is too obvious, reduce `Patch size`, increase `Color bind` or `Edge blend`, and keep `Pixel grain` at zero.
-- If the center zoom is boring, turn on `Auto place` to let the app search for a better off-center match.
+- Leave `Auto place` on for frame-aware choices. Use `Pick Portal` when you intentionally want a more adventurous off-center move.
 - If the zoom feels too slow or too fast, adjust `Zoom speed` first.
 
 ## Troubleshooting
@@ -180,10 +184,10 @@ If the exported video is too large, lower `Canvas`, `Frames`, or `FPS`.
 
 If the app feels slow, use fewer photos or lower the `Canvas` size.
 
-## Renderer checks
-
-With Node.js and Playwright available, run `node tests/renderer.spec.cjs`. Set `ZOOM_BROWSER` to a Chromium browser executable if Playwright's browser is not installed. Optional `ZOOM_TEST_PHOTOS` accepts a JSON array of local photo paths for visual checks. The suite tests uploads, extreme color/texture fixtures, portrait and panorama crops, camera continuity, 24 segment endpoint comparisons, deterministic scrubbing, portal picking, playback, and PNG export. Results and a transition contact sheet are written to the ignored `test-results/` directory.
-
 If the app does not show an install option, make sure you opened it from an HTTPS link instead of directly from a local file.
 
 If phone photos do not upload, refresh the app first so the newest offline cache loads. iPhone HEIC/HEIF photos can be converted by the app when online, but JPEG or PNG is the most reliable fallback on any phone.
+
+## Renderer checks
+
+With Node.js and Playwright available, run `node tests/renderer.spec.cjs`. Set `ZOOM_BROWSER` to a Chromium browser executable if Playwright's browser is not installed. Optional `ZOOM_TEST_PHOTOS` accepts a JSON array of local photo paths for visual checks. The suite tests uploads, extreme color/texture fixtures, portrait and panorama crops, framing-aware placement, destination visibility throughout the zoom, camera continuity, 24 segment endpoint comparisons, deterministic scrubbing, automatic controls, portal picking, playback, PNG/video export, and offline loading. Results and a transition contact sheet are written to the ignored `test-results/` directory.

@@ -28,6 +28,8 @@ const server = http.createServer((req, res) => {
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     assert.equal(await page.locator("#statusText").textContent(), "Empty stack");
+    assert.equal(await page.locator("#patchInput").inputValue(), "8");
+    assert.match(await page.locator("#placementStatus").textContent(), /Add two photos/);
     const data = await page.evaluate(() => {
       return [0, 1, 2, 3].map(n => {
         const source = document.createElement("canvas");
@@ -52,11 +54,99 @@ const server = http.createServer((req, res) => {
     await page.locator("#fileInput").setInputFiles(data.map((url, i) => ({ name: `fixture-${i}.png`, mimeType: "image/png", buffer: Buffer.from(url.split(",")[1], "base64") })));
     await page.waitForFunction(() => !state.isLoading && state.images.length === 4);
     assert.equal(await page.locator("#imageList li").count(), 4);
+    assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
+
+    const placementChecks = await page.evaluate(() => {
+      const settings = getSettings();
+      const solid = (color) => {
+        const source = makeCanvas(1024, 1024);
+        const ctx = source.getContext("2d");
+        ctx.fillStyle = color;
+        ctx.fillRect(0, 0, 1024, 1024);
+        return source;
+      };
+      const results = [];
+      const choose = (name, parent, child, patch = settings.patch, override) => {
+        const transition = PhotoZoom.createTransition(parent, child, { ...settings, patch }, override);
+        const { anchorX, anchorY } = transition.settings;
+        results.push({ name, patch, anchorX, anchorY, ...transition.placement });
+        return transition;
+      };
+      for (const patch of [0.08, 0.12, 0.2, 0.34]) {
+        choose(`flat-${patch}`, solid("#555555"), solid("#dddddd"), patch);
+      }
+      const nearTie = solid("#686868");
+      const nearCtx = nearTie.getContext("2d");
+      nearCtx.fillStyle = "#606060";
+      nearCtx.fillRect(0.71 * 1024, 0.4 * 1024, 0.2 * 1024, 0.2 * 1024);
+      choose("near-tie", nearTie, solid("#606060"));
+
+      const edgeOnly = solid("#a04020");
+      const edgeCtx = edgeOnly.getContext("2d");
+      edgeCtx.fillStyle = "#2060c0";
+      edgeCtx.fillRect(0, 0, 0.09 * 1024, 1024);
+      choose("outside-visible-crop", edgeOnly, solid("#2060c0"));
+
+      for (const [name, cx, cy] of [["left", 0.23, 0.5], ["right", 0.77, 0.5],
+        ["top", 0.5, 0.23], ["bottom", 0.5, 0.77]]) {
+        const parent = solid("#a04020");
+        const ctx = parent.getContext("2d");
+        ctx.fillStyle = "#2060c0";
+        ctx.fillRect((cx - 0.06) * 1024, (cy - 0.06) * 1024, 0.12 * 1024, 0.12 * 1024);
+        choose(`strong-${name}`, parent, solid("#2060c0"));
+      }
+
+      const patternedChild = solid("#606060");
+      const patternCtx = patternedChild.getContext("2d");
+      patternCtx.fillStyle = "#eeeeee";
+      patternCtx.fillRect(0, 0, 1024, 512);
+      patternCtx.fillStyle = "#222222";
+      patternCtx.fillRect(0, 512, 1024, 512);
+      const patternedParent = solid("#888888");
+      const parentCtx = patternedParent.getContext("2d");
+      parentCtx.drawImage(patternedChild, 0.73 * 1024, 0.46 * 1024, 0.08 * 1024, 0.08 * 1024);
+      choose("structure-match", patternedParent, patternedChild);
+
+      const picked = choose("picked", edgeOnly, patternedChild, 0.08, { anchorX: 0.89, anchorY: 0.11 });
+      const manual = PhotoZoom.createTransition(edgeOnly, patternedChild,
+        { ...settings, autoAnchor: false, anchorX: 0.72, anchorY: 0.28 });
+      results.push({ name: "manual", anchorX: manual.settings.anchorX, anchorY: manual.settings.anchorY, ...manual.placement });
+      const geometry = PhotoZoom.geometry(0.45, picked.settings, 720, 1);
+      if (!Number.isFinite(geometry.viewX)) throw new Error("Invalid picked camera geometry");
+      return results;
+    });
+    for (const result of placementChecks) {
+      if (result.mode === "auto") {
+        const margin = 0.1 + result.patch / 2 + 0.05;
+        assert.ok(Math.min(result.anchorX, result.anchorY, 1 - result.anchorX, 1 - result.anchorY) >= margin - 1e-12,
+          JSON.stringify(result));
+      }
+      if (result.name.startsWith("flat-") || ["near-tie", "outside-visible-crop"].includes(result.name)) {
+        assert.equal(result.reason, "balanced", JSON.stringify(result));
+        assert.ok(Math.abs(result.anchorX - 0.5) < 0.03 && Math.abs(result.anchorY - 0.5) < 0.03, JSON.stringify(result));
+      }
+      if (result.name.startsWith("strong-") || result.name === "structure-match") {
+        assert.equal(result.reason, "stronger-match", JSON.stringify(result));
+        assert.ok(result.matchImprovement >= 0.025, JSON.stringify(result));
+      }
+    }
+    assert.ok(placementChecks.find(result => result.name === "strong-left").anchorX < 0.3);
+    assert.ok(placementChecks.find(result => result.name === "strong-right").anchorX > 0.7);
+    assert.ok(placementChecks.find(result => result.name === "strong-top").anchorY < 0.3);
+    assert.ok(placementChecks.find(result => result.name === "strong-bottom").anchorY > 0.7);
+    for (const [name, x, y] of [["picked", 0.89, 0.11], ["manual", 0.72, 0.28]]) {
+      const result = placementChecks.find(result => result.name === name);
+      assert.equal(result.mode, name);
+      assert.ok(Math.abs(result.anchorX - x) < 1e-12 && Math.abs(result.anchorY - y) < 1e-12);
+    }
 
     const geometryChecks = await page.evaluate(() => {
       const settings = getSettings();
       let maxVelocityError = 0;
       let maxZoomError = 0;
+      let minimumTargetClearance = 1;
+      let maxCropOverflow = 0;
+      let pathSamples = 0;
       for (const patch of [0.08, 0.12, 0.2, 0.34]) {
         for (const anchorX of [0.08, 0.5, 0.92]) {
           for (const anchorY of [0.08, 0.5, 0.92]) {
@@ -79,10 +169,33 @@ const server = http.createServer((req, res) => {
           }
         }
       }
-      return { maxVelocityError, maxZoomError };
+      for (const patch of [0.08, 0.12, 0.2, 0.34]) {
+        const margin = 0.1 + patch / 2 + 0.05;
+        for (let x = 0; x <= 8; x++) {
+          for (let y = 0; y <= 8; y++) {
+            const s = { ...settings, patch, anchorX: margin + (1 - 2 * margin) * x / 8,
+              anchorY: margin + (1 - 2 * margin) * y / 8 };
+            for (let i = 0; i <= 200; i++) {
+              const g = PhotoZoom.geometry(i / 200, s, 720, 1);
+              const cx = (g.patchCenterX - g.viewX) / g.viewSize;
+              const cy = (g.patchCenterY - g.viewY) / g.viewSize;
+              minimumTargetClearance = Math.min(minimumTargetClearance, cx, cy, 1 - cx, 1 - cy);
+              // The central 80% of the child must stay inside the camera, all the way to handoff.
+              maxCropOverflow = Math.max(maxCropOverflow,
+                g.viewX - (g.patchX + patch * 0.1), g.viewY - (g.patchY + patch * 0.1),
+                g.patchX + patch * 0.9 - g.viewX - g.viewSize,
+                g.patchY + patch * 0.9 - g.viewY - g.viewSize);
+              pathSamples++;
+            }
+          }
+        }
+      }
+      return { maxVelocityError, maxZoomError, minimumTargetClearance, maxCropOverflow, pathSamples };
     });
     assert.ok(geometryChecks.maxVelocityError < 0.00002, JSON.stringify(geometryChecks));
     assert.ok(geometryChecks.maxZoomError < 1e-12);
+    assert.ok(geometryChecks.minimumTargetClearance >= 0.07, JSON.stringify(geometryChecks));
+    assert.ok(geometryChecks.maxCropOverflow < 1e-12, JSON.stringify(geometryChecks));
 
     const concealment = await page.evaluate(() => {
       const parent = makeCanvas(1024, 1024), child = makeCanvas(1024, 1024);
@@ -140,11 +253,23 @@ const server = http.createServer((req, res) => {
       return { deterministic: frames[1] === frames[4], count: state.transitions.size };
     });
     assert.ok(scrub.deterministic, "Scrubbing must not depend on playback history");
+    for (const button of ["#autoSortButton", "#autoTuneButton", "#autoCinematicButton", "#smoothDefaultsButton"]) {
+      const ids = await page.evaluate(() => state.images.map(image => image.id).sort());
+      await page.locator(button).click();
+      assert.deepEqual(await page.evaluate(() => state.images.map(image => image.id).sort()), ids);
+      assert.equal(await page.locator("#patchInput").inputValue(), "8");
+      assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
+    }
+    await page.locator("#autoAnchorInput").uncheck();
+    assert.match(await page.locator("#placementStatus").textContent(), /Manual anchor/);
+    await page.locator("#autoAnchorInput").check();
     await page.locator("#portalPickButton").click();
     await page.locator("#previewCanvas").click({ position: { x: 210, y: 260 } });
     assert.match(await page.locator("#portalHelp").textContent(), /Portal set/);
+    assert.match(await page.locator("#placementStatus").textContent(), /Your picked point/);
     await page.locator("#portalClearButton").click();
     assert.match(await page.locator("#portalHelp").textContent(), /Cleared/);
+    assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
     await page.locator("#playButton").click();
     await page.waitForFunction(() => state.isPlaying && state.progress > 0.05);
     await page.locator("#playButton").click();
@@ -206,7 +331,26 @@ const server = http.createServer((req, res) => {
     fs.writeFileSync(path.join(output, "transition-contact-sheet.png"), Buffer.from(montage.url.split(",")[1], "base64"));
     await page.screenshot({ path: path.join(output, "app.png"), fullPage: true });
     assert.deepEqual(errors, []);
-    const result = { geometryChecks, concealment, seams, scrub, averageFrameMs: montage.averageMs, photos: await page.locator("#imageList li").count(), video: path.basename(videoPath) };
+    const photoCount = await page.locator("#imageList li").count();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobilePlacement = await page.locator("#placementStatus").boundingBox();
+    assert.ok(mobilePlacement.x >= 0 && mobilePlacement.x + mobilePlacement.width <= 390);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+    const cacheReady = await page.evaluate(async () => {
+      const cache = await caches.open("zoom-loop-v8");
+      return Boolean(await cache.match("./zoom-renderer.js?v8"));
+    });
+    assert.equal(cacheReady, true);
+    await page.context().setOffline(true);
+    await page.reload({ waitUntil: "load" });
+    assert.equal(await page.locator("#patchInput").inputValue(), "8");
+    await page.locator("#sampleButton").click();
+    await page.waitForFunction(() => state.images.length === 3);
+    assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
+    assert.deepEqual(errors, []);
+    const result = { placementChecks, geometryChecks, concealment, seams, scrub, averageFrameMs: montage.averageMs, photos: photoCount, video: path.basename(videoPath) };
     fs.writeFileSync(path.join(output, "results.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ ...result, seams: `${seams.length} endpoint comparisons passed` }, null, 2));
   } finally {

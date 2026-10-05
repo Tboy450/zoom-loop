@@ -26,6 +26,7 @@ const smoothDefaultsButton = document.querySelector("#smoothDefaultsButton");
 const portalPickButton = document.querySelector("#portalPickButton");
 const portalClearButton = document.querySelector("#portalClearButton");
 const portalHelp = document.querySelector("#portalHelp");
+const placementStatus = document.querySelector("#placementStatus");
 
 const sizeInput = document.querySelector("#sizeInput");
 const framesInput = document.querySelector("#framesInput");
@@ -47,7 +48,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 
 const SOURCE_SIZE = 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v7";
+const ASSET_VERSION = "v8";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -696,7 +697,7 @@ function applySmoothDefaults() {
   fpsInput.value = "30";
   zoomRateInput.value = "82";
   smoothGuardInput.checked = true;
-  patchInput.value = "12";
+  patchInput.value = "8";
   autoAnchorInput.checked = true;
   anchorXInput.value = "50";
   anchorYInput.value = "50";
@@ -932,7 +933,16 @@ function getImageSignature(image) {
 }
 
 function scoreImagePair(firstImage, secondImage) {
-  return scorePatchSignature(getImageSignature(firstImage), getImageSignature(secondImage));
+  const first = getImageSignature(firstImage);
+  const second = getImageSignature(secondImage);
+  const red = (first.r - second.r) / 255;
+  const green = (first.g - second.g) / 255;
+  const blue = (first.b - second.b) / 255;
+  const colorDistance = Math.sqrt(red * red + green * green + blue * blue) / Math.sqrt(3);
+  const lumaDistance = Math.abs(first.luma - second.luma) / 255;
+  const contrastDistance = Math.abs(first.contrast - second.contrast) / 128;
+  const saturationDistance = Math.abs(first.saturation - second.saturation);
+  return colorDistance * 0.52 + lumaDistance * 0.22 + contrastDistance * 0.18 + saturationDistance * 0.08;
 }
 
 function sortImagesBySimilarity(images) {
@@ -1057,9 +1067,26 @@ function drawTransition(from, to, t, settings) {
   if (state.isPickingPortal && !state.isRecording) drawPortalPickMarker(previewCtx, geometry);
 }
 
+function updatePlacementStatus(current, settings) {
+  let message = "Add two photos to see the placement decision.";
+  if (current) {
+    const transition = getTransition(current.from, current.to, settings);
+    const { placement, settings: selected } = transition;
+    const position = `${Math.round(selected.anchorX * 100)}% across, ${Math.round(selected.anchorY * 100)}% down`;
+    const reason = placement.mode === "picked" ? "Your picked point" :
+      placement.mode === "manual" ? "Manual anchor" :
+      placement.reason === "stronger-match" ? "Auto: off-center for a substantially stronger visual match" :
+      "Auto: balanced in-frame match";
+    message = `Transition ${currentTransitionLabel(current)}. ${reason} (${position}).`;
+  }
+  if (placementStatus.textContent !== message) placementStatus.textContent = message;
+}
+
 function drawLoopFrame(progress) {
   const settings = getSettings();
   setCanvasSize(settings.size);
+  const current = getCurrentLoopSegment(progress);
+  updatePlacementStatus(current, settings);
 
   if (state.images.length === 0) {
     drawEmpty();
@@ -1071,7 +1098,6 @@ function drawLoopFrame(progress) {
     return;
   }
 
-  const current = getCurrentLoopSegment(progress);
   if (!current) return;
 
   drawTransition(current.from, current.to, current.localT, settings);

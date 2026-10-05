@@ -10,10 +10,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Zoom Loop">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="manifest.webmanifest?v7">
+    <link rel="manifest" href="manifest.webmanifest?v8">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
-    <link rel="stylesheet" href="styles.css?v7">
+    <link rel="stylesheet" href="styles.css?v8">
   </head>
   <body>
     <main class="app-shell">
@@ -107,6 +107,7 @@
           </div>
 
           <p id="portalHelp" class="upload-help" aria-live="polite"></p>
+          <p id="placementStatus" class="upload-help"></p>
 
           <label class="field toggle-field">
             <span>Smooth guard</span>
@@ -120,7 +121,7 @@
 
           <label class="field slider-field">
             <span>Patch size</span>
-            <input id="patchInput" type="range" min="8" max="34" value="12">
+            <input id="patchInput" type="range" min="8" max="34" value="8">
           </label>
 
           <label class="field toggle-field">
@@ -176,7 +177,7 @@
       </aside>
     </main>
 
-    <script src="zoom-renderer.js?v7"></script>
-    <script src="app.js?v7"></script>
+    <script src="zoom-renderer.js?v8"></script>
+    <script src="app.js?v8"></script>
   </body>
 </html>
