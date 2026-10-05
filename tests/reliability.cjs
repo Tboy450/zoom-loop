@@ -115,6 +115,50 @@ module.exports = async function testReliability(browser, url, fixtures) {
       assert.match(failure.message, /Recording failed: Test/);
     }
 
+    const renderFailure = await page.evaluate(async () => {
+      const originalDraw = drawCurrentFrame;
+      drawCurrentFrame = () => { throw new Error("Test rendering failure"); };
+      let rejected = false;
+      try { await recordWebm(); } catch { rejected = true; }
+      drawCurrentFrame = originalDraw;
+      return { rejected, recording: state.isRecording, progress: state.progress, message: statusText.textContent };
+    });
+    assert.equal(renderFailure.rejected, false, "Rendering errors must not escape export recovery");
+    assert.equal(renderFailure.recording, false);
+    assert.equal(renderFailure.progress, 0.37);
+    assert.match(renderFailure.message, /Recording failed: Test rendering failure/);
+
+    const pngFailure = await page.evaluate(async () => {
+      const originalBlob = previewCanvas.toBlob;
+      const originalData = previewCanvas.toDataURL;
+      previewCanvas.toBlob = callback => setTimeout(() => callback(null), 0);
+      previewCanvas.toDataURL = () => { throw new Error("Test PNG failure"); };
+      await downloadCanvasPng();
+      const png = statusText.textContent;
+      await shareCurrentFrame();
+      const share = statusText.textContent;
+      previewCanvas.toBlob = originalBlob;
+      previewCanvas.toDataURL = originalData;
+      return { png, share };
+    });
+    assert.match(pngFailure.png, /PNG export failed: Test PNG failure/);
+    assert.match(pngFailure.share, /Frame sharing failed: Test PNG failure/);
+
+    const playbackFailure = await page.evaluate(() => {
+      const originalDraw = drawCurrentFrame;
+      const originalRaf = window.requestAnimationFrame;
+      let scheduled = false;
+      window.requestAnimationFrame = () => { scheduled = true; };
+      drawCurrentFrame = () => { throw new Error("Test playback failure"); };
+      state.isPlaying = true;
+      try { tick(performance.now()); }
+      finally { drawCurrentFrame = originalDraw; window.requestAnimationFrame = originalRaf; }
+      return { scheduled, playing: state.isPlaying, message: statusText.textContent };
+    });
+    assert.equal(playbackFailure.scheduled, true, "Preview failures must not kill the animation scheduler");
+    assert.equal(playbackFailure.playing, false);
+    assert.match(playbackFailure.message, /Preview failed: Test playback failure/);
+
     await page.locator("#renderModeInput").selectOption("stitched");
     assert.equal(await page.locator("#cinematicModeInput").isDisabled(), true);
     assert.equal(await page.locator("#grainInput").isDisabled(), true);
@@ -130,6 +174,6 @@ module.exports = async function testReliability(browser, url, fixtures) {
     assert.equal(await page.locator("#playButton").isDisabled(), true);
     assert.equal(await page.locator("#pngButton").isDisabled(), true);
     assert.deepEqual(errors, []);
-    return { uploads: "passed", numericInputs: "passed", converterRetry: "passed", cancellation: "passed", recorderFailures: failures.length, mobileLayout: "passed" };
+    return { uploads: "passed", numericInputs: "passed", converterRetry: "passed", cancellation: "passed", recorderFailures: failures.length, renderingFailure: "passed", pngFailure: "passed", playbackRecovery: "passed", mobileLayout: "passed" };
   } finally { await page.close(); }
 };

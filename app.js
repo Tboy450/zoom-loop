@@ -21,6 +21,10 @@ const renderModeHelp = document.querySelector("#renderModeHelp");
 const sampleButton = document.querySelector("#sampleButton");
 const autoSortButton = document.querySelector("#autoSortButton");
 const clearButton = document.querySelector("#clearButton");
+const saveProjectButton = document.querySelector("#saveProjectButton");
+const openProjectButton = document.querySelector("#openProjectButton");
+const projectFileInput = document.querySelector("#projectFileInput");
+const projectHelp = document.querySelector("#projectHelp");
 const timelineInput = document.querySelector("#timelineInput");
 const timeReadout = document.querySelector("#timeReadout");
 const autoCinematicButton = document.querySelector("#autoCinematicButton");
@@ -50,8 +54,9 @@ const symmetryInput = document.querySelector("#symmetryInput");
 const alignmentInput = document.querySelector("#alignmentInput");
 
 const SOURCE_SIZE = 1024;
+const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v9";
+const ASSET_VERSION = "v10";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -693,6 +698,9 @@ function updateStatus() {
     control.disabled = busy;
   }
   fileInput.disabled = busy;
+  saveProjectButton.disabled = busy || count === 0;
+  openProjectButton.disabled = busy;
+  projectFileInput.disabled = busy;
   cancelExportButton.classList.toggle("is-hidden", !state.isRecording);
   cancelExportButton.disabled = Boolean(state.exportController?.signal.aborted);
   imageList.querySelectorAll("li").forEach((item, index) => {
@@ -1198,7 +1206,11 @@ function tick(timestamp) {
     const loopMs = (getTransitionFrames(settings) * state.images.length / settings.fps) * 1000;
     state.progress = (state.progress + delta / loopMs) % 1;
     timelineInput.value = String(Math.round(state.progress * 1000));
-    drawCurrentFrame();
+    try { drawCurrentFrame(); } catch (error) {
+      state.isPlaying = false;
+      syncPlaybackUi();
+      statusText.textContent = `Preview failed: ${error.message}. Try a lower canvas size.`;
+    }
   }
 
   requestAnimationFrame(tick);
@@ -1287,15 +1299,148 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([bytes], { type: mimeType });
 }
 
+async function saveProject() {
+  if (isBusy() || !state.images.length) return;
+  const previousPlaying = state.isPlaying;
+  state.isPreparing = true;
+  updateStatus();
+  let message;
+  try {
+    const project = {
+      format: "zoom-loop", version: 1, progress: state.progress,
+      settings: Object.fromEntries(controls.map(control => [control.id,
+        control.type === "checkbox" ? control.checked : control.value])),
+      images: [], portals: []
+    };
+    project.settings.framesInput = String(getSettings().frames);
+    project.settings.fpsInput = String(getSettings().fps);
+    if (state.images.length > 200) throw new Error("Projects support up to 200 photos");
+    for (const [index, image] of state.images.entries()) {
+      projectHelp.textContent = `Saving photo ${index + 1} of ${state.images.length}…`;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      project.images.push({ name: image.name, width: image.width, height: image.height,
+        data: image.canvas.toDataURL("image/png") });
+    }
+    const indices = new Map(state.images.map((image, index) => [image.id, index]));
+    for (const [pair, point] of state.portalOverrides) {
+      const [from, to] = pair.split("->").map(id => indices.get(id));
+      if (from !== undefined && to !== undefined) project.portals.push({ from, to, ...point });
+    }
+    const blob = new Blob([JSON.stringify(project)], { type: "application/json" });
+    if (blob.size > MAX_PROJECT_BYTES) throw new Error("Project is too large; use fewer photos (200 MB maximum)");
+    downloadBlob(blob, "zoom-loop.zoomloop");
+    message = "Project saved. It includes the working square photos, settings, and picked portals.";
+  } catch (error) {
+    message = `Could not save project: ${error.message}`;
+  } finally {
+    state.isPreparing = false;
+    state.isPlaying = previousPlaying;
+    state.lastTime = 0;
+    updateStatus();
+    projectHelp.textContent = message;
+  }
+}
+
+function validateProject(project) {
+  const invalid = () => { throw new Error("Invalid project file"); };
+  if (!project || project.format !== "zoom-loop") invalid();
+  if (project.version !== 1) throw new Error("This project version is not supported");
+  if (!Array.isArray(project.images) || !project.images.length || project.images.length > 200 ||
+      !Number.isFinite(project.progress) || project.progress < 0 || project.progress > 1 ||
+      !project.settings || !Array.isArray(project.portals) || project.portals.length > project.images.length ** 2) invalid();
+  for (const control of controls) {
+    const value = project.settings[control.id];
+    if (control.type === "checkbox") {
+      if (typeof value !== "boolean") invalid();
+    } else {
+      if (typeof value !== "string" || value.trim() === "") invalid();
+      if (control.tagName === "SELECT") {
+        if (![...control.options].some(option => option.value === value)) invalid();
+      } else if (!Number.isFinite(Number(value)) || Number(value) < Number(control.min) || Number(value) > Number(control.max)) invalid();
+    }
+  }
+  for (const image of project.images) {
+    if (!image || typeof image.name !== "string" || image.name.length > 1024 ||
+        !Number.isInteger(image.width) || !Number.isInteger(image.height) ||
+        image.width < 1 || image.height < 1 || image.width > 100000 || image.height > 100000 ||
+        typeof image.data !== "string" || image.data.length > 8 * 1024 * 1024 ||
+        !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(image.data)) invalid();
+  }
+  for (const point of project.portals) {
+    if (!point || !Number.isInteger(point.from) || !Number.isInteger(point.to) ||
+        point.from < 0 || point.to < 0 || point.from >= project.images.length || point.to >= project.images.length ||
+        !Number.isFinite(point.anchorX) || !Number.isFinite(point.anchorY) ||
+        point.anchorX < 0.08 || point.anchorX > 0.92 || point.anchorY < 0.08 || point.anchorY > 0.92) invalid();
+  }
+  return project;
+}
+
+async function openProject(file) {
+  if (!file || isBusy()) return;
+  const previousPlaying = state.isPlaying;
+  const loaded = [];
+  let committed = false;
+  let message;
+  setUploadBusy(true);
+  try {
+    if (file.size > MAX_PROJECT_BYTES) throw new Error("Project exceeds the 200 MB limit");
+    const project = validateProject(JSON.parse(await file.text()));
+    for (const [index, image] of project.images.entries()) {
+      projectHelp.textContent = `Opening photo ${index + 1} of ${project.images.length}…`;
+      const blob = dataUrlToBlob(image.data);
+      const header = new Uint8Array(await blob.slice(0, 24).arrayBuffer());
+      const view = new DataView(header.buffer);
+      // Project photos are normalized PNGs. Reject oversized embedded images before decoding.
+      if (header.length !== 24 || view.getUint32(0) !== 0x89504e47 ||
+          view.getUint32(4) !== 0x0d0a1a0a || view.getUint32(12) !== 0x49484452 ||
+          view.getUint32(16) !== SOURCE_SIZE || view.getUint32(20) !== SOURCE_SIZE) {
+        throw new Error(`Invalid saved photo ${index + 1}`);
+      }
+      const decoded = await decodeNatively(blob);
+      loaded.push({ id: createId(), name: image.name, width: image.width, height: image.height,
+        canvas: decoded.canvas, url: createThumbnailUrl(decoded.canvas) });
+    }
+    const portals = new Map(project.portals.map(point => [getPairKey(loaded[point.from].id, loaded[point.to].id),
+      { anchorX: point.anchorX, anchorY: point.anchorY }]));
+    state.images.forEach(image => { if (image.url.startsWith("blob:")) URL.revokeObjectURL(image.url); });
+    state.images = loaded;
+    state.portalOverrides = portals;
+    state.progress = project.progress;
+    timelineInput.value = String(Math.round(state.progress * 1000));
+    controls.forEach(control => {
+      if (control.type === "checkbox") control.checked = project.settings[control.id];
+      else control.value = project.settings[control.id];
+    });
+    invalidateTransitions();
+    committed = true;
+    renderImageList();
+    message = `Opened ${loaded.length} ${plural(loaded.length, "photo")}. Settings and picked portals restored.`;
+  } catch (error) {
+    message = `Could not open project: ${error.message}`;
+  } finally {
+    setUploadBusy(false);
+    state.isPlaying = !committed && previousPlaying;
+    state.lastTime = 0;
+    syncPlaybackUi();
+    try { drawCurrentFrame(); } catch (error) {
+      state.isPlaying = false;
+      syncPlaybackUi();
+      message = `Project preview failed: ${error.message}`;
+    }
+    projectHelp.textContent = message;
+  }
+}
+
 function canvasToBlob(type = "image/png", quality = 0.95) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (!previewCanvas.toBlob) {
       resolve(dataUrlToBlob(previewCanvas.toDataURL(type, quality)));
       return;
     }
 
     previewCanvas.toBlob((blob) => {
-      resolve(blob || dataUrlToBlob(previewCanvas.toDataURL(type, quality)));
+      try { resolve(blob || dataUrlToBlob(previewCanvas.toDataURL(type, quality))); }
+      catch (error) { reject(error); }
     }, type, quality);
   });
 }
@@ -1305,8 +1450,11 @@ function downloadBlob(blob, fileName) {
   const url = URL.createObjectURL(blob);
   link.href = url;
   link.download = fileName;
+  document.body.append(link);
   link.click();
-  URL.revokeObjectURL(url);
+  link.remove();
+  // Give the browser time to consume the download before releasing its URL.
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 async function shareBlob(blob, fileName, title) {
@@ -1350,13 +1498,19 @@ async function shareOrDownloadBlob(blob, fileName, title) {
 }
 
 async function downloadCanvasPng() {
-  const blob = await canvasToBlob("image/png");
-  downloadBlob(blob, "zoom-loop-frame.png");
+  if (isBusy() || !state.images.length) return;
+  try {
+    const blob = await canvasToBlob("image/png");
+    downloadBlob(blob, "zoom-loop-frame.png");
+  } catch (error) { statusText.textContent = `PNG export failed: ${error.message}`; }
 }
 
 async function shareCurrentFrame() {
-  const blob = await canvasToBlob("image/png");
-  await shareOrDownloadBlob(blob, "zoom-loop-frame.png", "Zoom Loop frame");
+  if (isBusy() || !state.images.length) return;
+  try {
+    const blob = await canvasToBlob("image/png");
+    await shareOrDownloadBlob(blob, "zoom-loop-frame.png", "Zoom Loop frame");
+  } catch (error) { statusText.textContent = `Frame sharing failed: ${error.message}`; }
 }
 
 async function recordWebm() {
@@ -1442,7 +1596,11 @@ async function recordWebm() {
     webmButton.textContent = "Video";
     renderImageList();
     updateStatus();
-    drawCurrentFrame();
+    try { drawCurrentFrame(); } catch (error) {
+      recordingError ||= error;
+      state.isPlaying = false;
+      syncPlaybackUi();
+    }
     if (recordingError) statusText.textContent = `Recording failed: ${recordingError.message}`;
     else if (controller.signal.aborted) statusText.textContent = "Export cancelled";
     else if (completed) statusText.textContent = "Video ready";
@@ -1520,6 +1678,13 @@ cancelExportButton.addEventListener("click", () => {
 sampleButton.addEventListener("click", createSampleSet);
 autoSortButton.addEventListener("click", autoSortImages);
 clearButton.addEventListener("click", clearImages);
+saveProjectButton.addEventListener("click", saveProject);
+openProjectButton.addEventListener("click", () => { if (!isBusy()) projectFileInput.click(); });
+projectFileInput.addEventListener("change", (event) => {
+  const file = event.target.files[0];
+  event.target.value = "";
+  openProject(file);
+});
 autoCinematicButton.addEventListener("click", applyAutoCinematic);
 autoTuneButton.addEventListener("click", autoTuneLoop);
 smoothDefaultsButton.addEventListener("click", applySmoothDefaults);

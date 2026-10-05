@@ -36,7 +36,7 @@ iPhone or iPad:
 
 The installed app works offline after it has loaded once.
 
-If the app link shows a 404 page, GitHub Pages has not been turned on yet. In GitHub, open this repo's `Settings`, go to `Pages`, set the source to `GitHub Actions`, then push a change or rerun the Pages workflow.
+This repository publishes GitHub Pages from the `gh-pages` branch. If the app link shows a 404 page, check `Settings` → `Pages` and choose that branch with `/ (root)` as the folder.
 
 ## Quick Start
 
@@ -70,6 +70,12 @@ The order matters:
 You can also drag image files onto the `Add Images` box.
 
 Supported formats include JPG/JPEG, PNG, WebP, GIF, BMP, AVIF, HEIC, and HEIF. The app converts each loaded photo into an internal square canvas before rendering the loop. If a HEIC or HEIF photo does not open, load the app while online once so the converter can load, or save/export the photo as JPEG or PNG and add it again.
+
+## Save Your Work
+
+`Save Project` downloads a `.zoomloop` file containing the photo order, render settings, timeline position, and all picked portals. `Open Project` restores that file, including its photos, without uploading anything or requiring internet. A successful open replaces the current stack and leaves playback paused; save the current project first if you want to keep it.
+
+Projects contain the lossless 1024×1024 working square photos, rather than the full original files. Keep your originals separately for future cropping or editing. Projects support up to 200 photos and 200 MB. Invalid or unsupported files leave the current project intact. Refreshing the app still clears the working stack unless you save and reopen a project.
 
 ## Make The Loop
 
@@ -163,7 +169,7 @@ Opens the phone or computer share sheet with the current PNG frame when supporte
 `Video`
 Records one full loop. The app uses MP4 when the browser supports it, otherwise WebM. If sharing files is supported, it opens the native share sheet; otherwise it downloads the video.
 
-Export shows preparation and recording progress. `Cancel export` discards the partial recording. Completing, cancelling, or failing an export restores the original playhead and playback state, and releases canvas recording resources. Image uploads pause playback and lock conflicting controls until decoding finishes. Invalid frame and FPS values fall back to safe limits; a failed HEIC converter download can be retried.
+Export shows preparation and recording progress. `Cancel export` discards the partial recording. Completing, cancelling, or failing an export restores the original playhead and playback state, and releases canvas recording resources. If the preview itself cannot render, playback pauses and reports the failure. PNG and frame sharing errors also report a message instead of silently hanging. Image uploads pause playback and lock conflicting controls until decoding finishes. Invalid frame and FPS values fall back to safe limits; a failed HEIC converter download can be retried.
 
 Video recording depends on your browser. If recording does not work, try Microsoft Edge or Chrome. On iPhone, some browsers may save video to Files instead of directly to Photos.
 
@@ -198,4 +204,4 @@ If phone photos do not upload, refresh the app first so the newest offline cache
 
 ## Renderer checks
 
-With Node.js and Playwright available, run `node tests/renderer.spec.cjs`. Set `ZOOM_BROWSER` to a Chromium browser executable if Playwright's browser is not installed. Optional `ZOOM_TEST_PHOTOS` accepts a JSON array of local photo paths for visual checks. The suite covers both modes, 48 segment endpoint comparisons, fixed scene appearance, uploads, extreme color/texture fixtures, portrait and panorama crops, camera continuity, framing-aware placement, destination visibility, automatic controls, scrubbing, portal picking, playback, PNG/video export, cancellation, failure cleanup, converter retries, numeric input limits, mobile layout, and offline loading. Results and a Stitched World contact sheet are written to the ignored `test-results/` directory.
+With Node.js and Playwright available, run `node tests/renderer.spec.cjs`. Set `ZOOM_BROWSER` to a Chromium browser executable if Playwright's browser is not installed. Optional `ZOOM_TEST_PHOTOS` accepts a JSON array of local photo paths for visual checks. The suite covers both modes, 48 segment endpoint comparisons plus all four output resolutions, fixed scene appearance, uploads, extreme color/texture fixtures, portrait and panorama crops, camera continuity, framing-aware placement, destination visibility, automatic controls, scrubbing, portal picking, playback, PNG/video export, cancellation, rendering and recorder failure cleanup, converter retries, numeric input limits, mobile layout, and offline loading. Project checks verify exact photo pixels, settings, order and picks after saving and reopening offline, plus rejection of malformed files without changing the current stack. Results and a Stitched World contact sheet are written to the ignored `test-results/` directory.

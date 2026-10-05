@@ -4,6 +4,7 @@ const path = require("node:path");
 const http = require("node:http");
 const { chromium } = require("playwright");
 const testReliability = require("./reliability.cjs");
+const testProjects = require("./projects.cjs");
 
 const root = path.resolve(__dirname, "..");
 const output = path.join(root, "test-results");
@@ -252,6 +253,34 @@ const server = http.createServer((req, res) => {
     });
     assert.ok(seams.every(seam => seam.mean < 0.03 && seam.max <= 3), JSON.stringify(seams));
 
+    const resolutions = await page.evaluate(() => {
+      const results = [];
+      for (const mode of ["blend", "stitched"]) {
+        renderModeInput.value = mode;
+        patchInput.value = "8";
+        invalidateTransitions();
+        for (const size of [720, 1080, 1440, 2160]) {
+          sizeInput.value = String(size); setCanvasSize(size);
+          const settings = getSettings();
+          drawTransition(state.images[0], state.images[1], 1, settings);
+          const end = previewCtx.getImageData(0, 0, size, size).data;
+          drawTransition(state.images[1], state.images[2], 0, settings);
+          const start = previewCtx.getImageData(0, 0, size, size).data;
+          let sum = 0, max = 0;
+          for (let i = 0; i < end.length; i++) {
+            const diff = Math.abs(end[i] - start[i]); sum += diff; max = Math.max(max, diff);
+          }
+          const began = performance.now();
+          drawTransition(state.images[0], state.images[1], 0.6, settings);
+          previewCtx.getImageData(size / 2, size / 2, 1, 1);
+          results.push({ mode, size, mean: sum / end.length, max, frameMs: performance.now() - began });
+        }
+      }
+      renderModeInput.value = "blend"; sizeInput.value = "720"; setCanvasSize(720);
+      return results;
+    });
+    assert.ok(resolutions.every(check => check.mean < 0.03 && check.max <= 3), JSON.stringify(resolutions));
+
     const fixedScene = await page.evaluate(() => {
       const settings = { ...getSettings(), mode: "stitched", autoAnchor: false, anchorX: 0.5, anchorY: 0.5, patch: 0.12 };
       const images = ["#402040", "#dca040"].map(color => {
@@ -320,6 +349,7 @@ const server = http.createServer((req, res) => {
     assert.ok(fs.statSync(videoPath).size > 1000);
     assert.equal(await page.locator("#patchInput").isDisabled(), false);
     const reliability = await testReliability(browser, `http://127.0.0.1:${server.address().port}/`, fixtures);
+    const projects = await testProjects(browser, `http://127.0.0.1:${server.address().port}/`, fixtures, output);
 
     if (process.env.ZOOM_TEST_PHOTOS) {
       await page.locator("#clearButton").click();
@@ -386,8 +416,8 @@ const server = http.createServer((req, res) => {
     await page.evaluate(() => navigator.serviceWorker.ready);
     await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
     const cacheReady = await page.evaluate(async () => {
-      const cache = await caches.open("zoom-loop-v9");
-      return Boolean(await cache.match("./zoom-renderer.js?v9"));
+      const cache = await caches.open("zoom-loop-v10");
+      return Boolean(await cache.match("./zoom-renderer.js?v10"));
     });
     assert.equal(cacheReady, true);
     await page.context().setOffline(true);
@@ -397,7 +427,7 @@ const server = http.createServer((req, res) => {
     await page.waitForFunction(() => state.images.length === 3);
     assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
     assert.deepEqual(errors, []);
-    const result = { placementChecks, geometryChecks, concealment, seams, fixedScene, scrub, reliability, offline: "passed", averageFrameMs: montage.averageMs, photos: photoCount, video: path.basename(videoPath) };
+    const result = { placementChecks, geometryChecks, concealment, seams, resolutions, fixedScene, scrub, reliability, projects, offline: "passed", averageFrameMs: montage.averageMs, photos: photoCount, video: path.basename(videoPath) };
     fs.writeFileSync(path.join(output, "results.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ ...result, seams: `${seams.length} endpoint comparisons passed` }, null, 2));
   } finally {
