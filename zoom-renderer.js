@@ -318,6 +318,9 @@ const PhotoZoom = (() => {
     const childCtx = childSource.getContext("2d", { willReadFrequently: true });
     drawExtended(childCtx, child, TEXTURE_SIZE * HALO / SPAN, TEXTURE_SIZE * HALO / SPAN, TEXTURE_SIZE / SPAN);
     const childData = childCtx.getImageData(0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
+    if (settings.mode === "stitched") {
+      return { ...createStitchedTransition(parentData, childData, childExtension, settings, portal), placement };
+    }
     const radius = Math.round(18 + settings.sampleBlend * 38);
     const parentLow = lowPass(parentData, radius);
     const childLow = lowPass(childData, radius);
@@ -375,6 +378,52 @@ const PhotoZoom = (() => {
     return { settings, rect: portal, texture, cutout, extension: childExtension, placement };
   }
 
+  function createStitchedTransition(parent, child, childExtension, settings, portal) {
+    // Prepare a multiband join once. Fine detail changes over a narrow seam;
+    // broad color and lighting change across a much wider surrounding region.
+    // All masks live in photo coordinates and never depend on the playhead.
+    const parentBands = [3, 14, 48].map(radius => lowPass(parent, radius));
+    const childBands = [3, 14, 48].map(radius => lowPass(child, radius));
+    const stitch = canvas(TEXTURE_SIZE);
+    const ctx = stitch.getContext("2d");
+    const result = ctx.createImageData(TEXTURE_SIZE, TEXTURE_SIZE);
+    const cutout = canvas(TEXTURE_SIZE);
+    const maskCtx = cutout.getContext("2d");
+    const mask = maskCtx.createImageData(TEXTURE_SIZE, TEXTURE_SIZE);
+    const feather = mix(0.25, HALO, settings.edgeBlend);
+    for (let y = 0; y < TEXTURE_SIZE; y++) {
+      for (let x = 0; x < TEXTURE_SIZE; x++) {
+        const pixel = y * TEXTURE_SIZE + x;
+        const u = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO;
+        const v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
+        const d = Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5));
+        const variation = settings.shapeMorph * 0.025 * Math.sin(u * 17) * Math.sin(v * 19);
+        const distance = d + variation * smooth(0.4, 0.6, d);
+        const fine = 1 - smooth(0.44, 0.64, distance);
+        const medium = 1 - smooth(0.4, mix(0.65, 0.85, settings.sampleBlend), distance);
+        const broad = 1 - smooth(0.32, 0.94, distance);
+        const lighting = 1 - smooth(mix(0.45, 0.22, settings.bind), 1, distance);
+        for (let c = 0; c < 3; c++) {
+          const k = pixel * 3 + c;
+          const a = pixel * 4 + c;
+          result.data[a] =
+            mix(parent.data[a] - parentBands[0][k], child.data[a] - childBands[0][k], fine) +
+            mix(parentBands[0][k] - parentBands[1][k], childBands[0][k] - childBands[1][k], medium) +
+            mix(parentBands[1][k] - parentBands[2][k], childBands[1][k] - childBands[2][k], broad) +
+            mix(parentBands[2][k], childBands[2][k], lighting);
+        }
+        // The central 80% remains the full-resolution original, including its
+        // own nested join. That makes rebasing into it pixel-continuous.
+        result.data[pixel * 4 + 3] = 255 * smooth(0.405, 0.49, d);
+        const outer = Math.hypot(Math.max(0, -u, u - 1), Math.max(0, -v, v - 1));
+        mask.data[pixel * 4 + 3] = 255 * smooth(0, feather, outer);
+      }
+    }
+    ctx.putImageData(result, 0, 0);
+    maskCtx.putImageData(mask, 0, 0);
+    return { settings, rect: portal, stitch, cutout, extension: childExtension };
+  }
+
   function layerAt(depth, projectedSize, outputSize) {
     // Bucket sizes avoid reallocating a canvas on every animation frame.
     const size = Math.min(outputSize, Math.max(32, 2 ** Math.ceil(Math.log2(projectedSize))));
@@ -397,16 +446,22 @@ const PhotoZoom = (() => {
       const core = size / SPAN;
       const inset = core * HALO;
       const coverage = projectedSize / outputSize;
-      const reveal = smooth(incoming.settings.cinematicMode ? 0.2 : 0.16, 0.9, coverage);
+      const stitched = settings.mode === "stitched";
+      const reveal = stitched ? 1 : smooth(incoming.settings.cinematicMode ? 0.2 : 0.16, 0.9, coverage);
       local.clearRect(0, 0, size, size);
       local.imageSmoothingEnabled = true;
       local.imageSmoothingQuality = "high";
       // Blend broad color and fine detail separately: an abrupt change from
       // a sharp photograph to a soft extension would itself reveal a box.
       local.drawImage(incoming.extension, 0, 0, size, size);
-      drawPhotoDetail(local, images[index % images.length].canvas, inset, core, coverage, depth);
-      local.globalAlpha = 1 - reveal;
-      local.drawImage(incoming.texture, 0, 0, size, size);
+      if (stitched) {
+        local.drawImage(images[index % images.length].canvas, inset, inset, core, core);
+        local.drawImage(incoming.stitch, 0, 0, size, size);
+      } else {
+        drawPhotoDetail(local, images[index % images.length].canvas, inset, core, coverage, depth);
+        local.globalAlpha = 1 - reveal;
+        local.drawImage(incoming.texture, 0, 0, size, size);
+      }
       local.globalAlpha = 1;
 
       const nextSize = projectedSize * settings.patch;

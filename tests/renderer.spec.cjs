@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
 const { chromium } = require("playwright");
+const testReliability = require("./reliability.cjs");
 
 const root = path.resolve(__dirname, "..");
 const output = path.join(root, "test-results");
@@ -51,7 +52,8 @@ const server = http.createServer((req, res) => {
         return source.toDataURL("image/png");
       });
     });
-    await page.locator("#fileInput").setInputFiles(data.map((url, i) => ({ name: `fixture-${i}.png`, mimeType: "image/png", buffer: Buffer.from(url.split(",")[1], "base64") })));
+    const fixtures = data.map((url, i) => ({ name: `fixture-${i}.png`, mimeType: "image/png", buffer: Buffer.from(url.split(",")[1], "base64") }));
+    await page.locator("#fileInput").setInputFiles(fixtures);
     await page.waitForFunction(() => !state.isLoading && state.images.length === 4);
     assert.equal(await page.locator("#imageList li").count(), 4);
     assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
@@ -220,31 +222,55 @@ const server = http.createServer((req, res) => {
       const results = [];
       sizeInput.value = "720";
       setCanvasSize(720);
-      for (const cinematic of [false, true]) {
-        cinematicModeInput.checked = cinematic;
-        for (const patch of [8, 12, 34]) {
-          patchInput.value = String(patch);
-          invalidateTransitions();
-          state.images.forEach((image, i) => setPortalOverride(image.id, state.images[(i + 1) % state.images.length].id, i % 2 ? 0.92 : 0.08, i % 2 ? 0.08 : 0.92));
-          const settings = getSettings();
-          for (let i = 0; i < state.images.length; i++) {
-            const from = state.images[i], to = state.images[(i + 1) % state.images.length];
-            drawTransition(from, to, 1, settings);
-            const end = previewCtx.getImageData(0, 0, 720, 720).data;
-            drawTransition(to, state.images[(i + 2) % state.images.length], 0, settings);
-            const start = previewCtx.getImageData(0, 0, 720, 720).data;
-            let sum = 0, max = 0;
-            for (let j = 0; j < end.length; j++) {
-              const diff = Math.abs(end[j] - start[j]);
-              sum += diff; max = Math.max(max, diff);
+      for (const mode of ["blend", "stitched"]) {
+        renderModeInput.value = mode;
+        for (const cinematic of [false, true]) {
+          cinematicModeInput.checked = cinematic;
+          for (const patch of [8, 12, 34]) {
+            patchInput.value = String(patch);
+            invalidateTransitions();
+            state.images.forEach((image, i) => setPortalOverride(image.id, state.images[(i + 1) % state.images.length].id, i % 2 ? 0.92 : 0.08, i % 2 ? 0.08 : 0.92));
+            const settings = getSettings();
+            for (let i = 0; i < state.images.length; i++) {
+              const from = state.images[i], to = state.images[(i + 1) % state.images.length];
+              drawTransition(from, to, 1, settings);
+              const end = previewCtx.getImageData(0, 0, 720, 720).data;
+              drawTransition(to, state.images[(i + 2) % state.images.length], 0, settings);
+              const start = previewCtx.getImageData(0, 0, 720, 720).data;
+              let sum = 0, max = 0;
+              for (let j = 0; j < end.length; j++) {
+                const diff = Math.abs(end[j] - start[j]);
+                sum += diff; max = Math.max(max, diff);
+              }
+              results.push({ mode, cinematic, patch, pair: i, mean: sum / end.length, max });
             }
-            results.push({ cinematic, patch, pair: i, mean: sum / end.length, max });
           }
         }
       }
+      renderModeInput.value = "blend";
       return results;
     });
     assert.ok(seams.every(seam => seam.mean < 0.03 && seam.max <= 3), JSON.stringify(seams));
+
+    const fixedScene = await page.evaluate(() => {
+      const settings = { ...getSettings(), mode: "stitched", autoAnchor: false, anchorX: 0.5, anchorY: 0.5, patch: 0.12 };
+      const images = ["#402040", "#dca040"].map(color => {
+        const photo = makeCanvas(1024, 1024);
+        const ctx = photo.getContext("2d"); ctx.fillStyle = color; ctx.fillRect(0, 0, 1024, 1024);
+        return { canvas: photo };
+      });
+      const prepared = images.map((image, i) => PhotoZoom.createTransition(image.canvas, images[1 - i].canvas, settings));
+      const output = makeCanvas(720, 720), ctx = output.getContext("2d");
+      const samples = [0.05, 0.45, 0.75].map(t => {
+        PhotoZoom.render(ctx, images, 0, t, settings, from => prepared[images.indexOf(from)]);
+        const geometry = PhotoZoom.geometry(t, settings, 720);
+        const x = Math.round((geometry.patchX + geometry.patchSize * 0.3 - geometry.viewX) * geometry.scale);
+        const y = Math.round((geometry.patchY + geometry.patchSize * 0.35 - geometry.viewY) * geometry.scale);
+        return [...ctx.getImageData(x, y, 1, 1).data];
+      });
+      return { samples, preparedPairs: prepared.length };
+    });
+    assert.ok(fixedScene.samples.every(sample => sample.every((value, c) => Math.abs(value - fixedScene.samples[0][c]) <= 2)), JSON.stringify(fixedScene));
 
     await page.evaluate(() => { state.portalOverrides.clear(); cinematicModeInput.checked = false; applySmoothDefaults(); });
     const scrub = await page.evaluate(() => {
@@ -278,6 +304,8 @@ const server = http.createServer((req, res) => {
     await png.saveAs(path.join(output, "export-frame.png"));
     assert.ok(fs.statSync(path.join(output, "export-frame.png")).size > 1000);
 
+    await page.locator("#renderModeInput").selectOption("stitched");
+    const exportProgress = await page.evaluate(() => state.progress);
     await page.locator("#framesInput").fill("24");
     await page.locator("#fpsInput").fill("30");
     await page.locator("#zoomRateInput").fill("250");
@@ -288,8 +316,10 @@ const server = http.createServer((req, res) => {
     const videoPath = path.join(output, video.suggestedFilename());
     await video.saveAs(videoPath);
     await page.waitForFunction(() => !state.isRecording);
+    assert.equal(await page.evaluate(() => state.progress), exportProgress);
     assert.ok(fs.statSync(videoPath).size > 1000);
     assert.equal(await page.locator("#patchInput").isDisabled(), false);
+    const reliability = await testReliability(browser, `http://127.0.0.1:${server.address().port}/`, fixtures);
 
     if (process.env.ZOOM_TEST_PHOTOS) {
       await page.locator("#clearButton").click();
@@ -301,6 +331,8 @@ const server = http.createServer((req, res) => {
       state.portalOverrides.clear();
       cinematicModeInput.checked = false;
       applySmoothDefaults();
+      renderModeInput.value = "stitched";
+      invalidateTransitions(); updateStatus();
       sizeInput.value = "720";
       const sheet = document.createElement("canvas");
       const cell = 320;
@@ -330,6 +362,21 @@ const server = http.createServer((req, res) => {
     });
     fs.writeFileSync(path.join(output, "transition-contact-sheet.png"), Buffer.from(montage.url.split(",")[1], "base64"));
     await page.screenshot({ path: path.join(output, "app.png"), fullPage: true });
+    assert.equal(await page.evaluate(() => document.querySelector(".app-shell").getBoundingClientRect().height <= innerHeight), true);
+    assert.equal(await page.evaluate(() => {
+      const canvas = previewCanvas.getBoundingClientRect();
+      const wrap = canvasWrap.getBoundingClientRect();
+      return Math.abs(canvas.width - canvas.height) < 1 && canvas.height <= wrap.height + 1 && canvas.width <= wrap.width + 1;
+    }), true, "Desktop preview must fit without clipping or stretching");
+
+    const offlinePage = await browser.newPage();
+    await offlinePage.goto(`http://127.0.0.1:${server.address().port}/?sample=1&mode=stitched`);
+    await offlinePage.evaluate(() => navigator.serviceWorker.ready);
+    await offlinePage.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+    await offlinePage.context().setOffline(true);
+    await offlinePage.reload();
+    await offlinePage.waitForFunction(() => state.images.length === 3 && getSettings().mode === "stitched");
+    await offlinePage.close();
     assert.deepEqual(errors, []);
     const photoCount = await page.locator("#imageList li").count();
     await page.setViewportSize({ width: 390, height: 844 });
@@ -339,8 +386,8 @@ const server = http.createServer((req, res) => {
     await page.evaluate(() => navigator.serviceWorker.ready);
     await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
     const cacheReady = await page.evaluate(async () => {
-      const cache = await caches.open("zoom-loop-v8");
-      return Boolean(await cache.match("./zoom-renderer.js?v8"));
+      const cache = await caches.open("zoom-loop-v9");
+      return Boolean(await cache.match("./zoom-renderer.js?v9"));
     });
     assert.equal(cacheReady, true);
     await page.context().setOffline(true);
@@ -350,7 +397,7 @@ const server = http.createServer((req, res) => {
     await page.waitForFunction(() => state.images.length === 3);
     assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
     assert.deepEqual(errors, []);
-    const result = { placementChecks, geometryChecks, concealment, seams, scrub, averageFrameMs: montage.averageMs, photos: photoCount, video: path.basename(videoPath) };
+    const result = { placementChecks, geometryChecks, concealment, seams, fixedScene, scrub, reliability, offline: "passed", averageFrameMs: montage.averageMs, photos: photoCount, video: path.basename(videoPath) };
     fs.writeFileSync(path.join(output, "results.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ ...result, seams: `${seams.length} endpoint comparisons passed` }, null, 2));
   } finally {

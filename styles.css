@@ -71,7 +71,7 @@ button:disabled {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100dvh;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
   gap: 0;
@@ -80,6 +80,7 @@ button:disabled {
 }
 
 .stage {
+  min-height: 0;
   min-width: 0;
   padding: max(24px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom));
   display: grid;
@@ -154,6 +155,7 @@ h2 {
 }
 
 .canvas-wrap {
+  container-type: size;
   min-height: 0;
   min-width: 0;
   width: 100%;
@@ -178,7 +180,7 @@ h2 {
 
 #previewCanvas {
   display: block;
-  width: min(100%, calc(100vh - 150px));
+  width: min(100cqw, 100cqh);
   max-width: 100%;
   aspect-ratio: 1 / 1;
   height: auto;
@@ -282,6 +284,7 @@ input[type="range"] {
 }
 
 .control-panel {
+  min-height: 0;
   min-width: 0;
   width: 100%;
   border-left: 1px solid var(--line);
@@ -484,6 +487,8 @@ input[type="range"] {
 
 @media (max-width: 980px) {
   .app-shell {
+    height: auto;
+    min-height: 100dvh;
     grid-template-columns: 1fr;
   }
 
@@ -495,6 +500,10 @@ input[type="range"] {
 
   #previewCanvas {
     width: 100%;
+  }
+
+  .canvas-wrap {
+    container-type: normal;
   }
 }
 

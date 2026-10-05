@@ -1,7 +1,7 @@
 "use strict";
 
-const CACHE_NAME = "zoom-loop-v8";
-const ASSET_VERSION = "v8";
+const CACHE_NAME = "zoom-loop-v9";
+const ASSET_VERSION = "v9";
 const APP_ASSETS = [
   "./",
   "./index.html",
@@ -26,7 +26,7 @@ self.addEventListener("activate", (event) => {
     caches.keys().then((keys) =>
       Promise.all(
         keys
-          .filter((key) => key !== CACHE_NAME)
+          .filter((key) => key.startsWith("zoom-loop-") && key !== CACHE_NAME)
           .map((key) => caches.delete(key))
       )
     ).then(() => self.clients.claim())

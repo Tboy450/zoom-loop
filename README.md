@@ -79,6 +79,11 @@ Use the timeline slider along the bottom to scrub through the loop by hand.
 
 ## Main Controls
 
+`Mode`
+Choose `Photo Blend` for a concealed image whose detail gradually emerges, or `Stitched World` for a fixed nested scene. Stitched World prepares each join locally before playback, blending fine detail across a narrow region and lighting/color across a wider region. Photos and joins stay fixed while the camera zooms; there is no time-dependent reveal. Only the supplied photos are used, and nothing is sent to a generation service.
+
+Stitched World works best when neighboring photos share textures, colors, or composition. Different subjects can still look like a collage; local blending cannot invent connecting scenery. Use `Auto Tune` to arrange photos and choose insertion points, then `Pick Portal` to refine individual joins. Cinematic reveal, grain, symmetry, and alignment are available in Photo Blend only.
+
 `Canvas`
 Changes the export and preview resolution. Higher values look sharper but render slower.
 
@@ -127,6 +132,7 @@ Move the portal left/right and up/down inside the current image when `Auto place
 
 `Color bind`
 Controls how strongly the small embedded photo borrows the parent region's color and texture. The default of 100 hides most of the new photo's structure at a distance; its detail and original colors return as you zoom in.
+In Stitched World, this controls color matching around the fixed join; the central photo remains unchanged.
 
 `Sample blend`
 Changes the scale used to separate photo detail from lighting and color during texture blending.
@@ -156,6 +162,8 @@ Opens the phone or computer share sheet with the current PNG frame when supporte
 
 `Video`
 Records one full loop. The app uses MP4 when the browser supports it, otherwise WebM. If sharing files is supported, it opens the native share sheet; otherwise it downloads the video.
+
+Export shows preparation and recording progress. `Cancel export` discards the partial recording. Completing, cancelling, or failing an export restores the original playhead and playback state, and releases canvas recording resources. Image uploads pause playback and lock conflicting controls until decoding finishes. Invalid frame and FPS values fall back to safe limits; a failed HEIC converter download can be retried.
 
 Video recording depends on your browser. If recording does not work, try Microsoft Edge or Chrome. On iPhone, some browsers may save video to Files instead of directly to Photos.
 
@@ -190,4 +198,4 @@ If phone photos do not upload, refresh the app first so the newest offline cache
 
 ## Renderer checks
 
-With Node.js and Playwright available, run `node tests/renderer.spec.cjs`. Set `ZOOM_BROWSER` to a Chromium browser executable if Playwright's browser is not installed. Optional `ZOOM_TEST_PHOTOS` accepts a JSON array of local photo paths for visual checks. The suite tests uploads, extreme color/texture fixtures, portrait and panorama crops, framing-aware placement, destination visibility throughout the zoom, camera continuity, 24 segment endpoint comparisons, deterministic scrubbing, automatic controls, portal picking, playback, PNG/video export, and offline loading. Results and a transition contact sheet are written to the ignored `test-results/` directory.
+With Node.js and Playwright available, run `node tests/renderer.spec.cjs`. Set `ZOOM_BROWSER` to a Chromium browser executable if Playwright's browser is not installed. Optional `ZOOM_TEST_PHOTOS` accepts a JSON array of local photo paths for visual checks. The suite covers both modes, 48 segment endpoint comparisons, fixed scene appearance, uploads, extreme color/texture fixtures, portrait and panorama crops, camera continuity, framing-aware placement, destination visibility, automatic controls, scrubbing, portal picking, playback, PNG/video export, cancellation, failure cleanup, converter retries, numeric input limits, mobile layout, and offline loading. Results and a Stitched World contact sheet are written to the ignored `test-results/` directory.

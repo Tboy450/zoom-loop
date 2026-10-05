@@ -15,6 +15,9 @@ const stagePlayButton = document.querySelector("#stagePlayButton");
 const shareButton = document.querySelector("#shareButton");
 const pngButton = document.querySelector("#pngButton");
 const webmButton = document.querySelector("#webmButton");
+const cancelExportButton = document.querySelector("#cancelExportButton");
+const renderModeInput = document.querySelector("#renderModeInput");
+const renderModeHelp = document.querySelector("#renderModeHelp");
 const sampleButton = document.querySelector("#sampleButton");
 const autoSortButton = document.querySelector("#autoSortButton");
 const clearButton = document.querySelector("#clearButton");
@@ -48,7 +51,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 
 const SOURCE_SIZE = 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v8";
+const ASSET_VERSION = "v9";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -73,6 +76,8 @@ const state = {
   isPlaying: false,
   isRecording: false,
   isLoading: false,
+  isPreparing: false,
+  exportController: null,
   isPickingPortal: false,
   lastTime: 0,
   dragDepth: 0
@@ -82,6 +87,7 @@ let deferredInstallPrompt = null;
 let heicConverterPromise = null;
 
 const controls = [
+  renderModeInput,
   sizeInput,
   framesInput,
   fpsInput,
@@ -151,9 +157,10 @@ function setCanvasSize(size) {
 
 function getSettings() {
   return {
-    size: Number(sizeInput.value),
-    frames: Number(framesInput.value),
-    fps: Number(fpsInput.value),
+    mode: renderModeInput.value === "stitched" ? "stitched" : "blend",
+    size: [720, 1080, 1440, 2160].includes(Number(sizeInput.value)) ? Number(sizeInput.value) : 1080,
+    frames: readNumber(framesInput, 120, 24, 240),
+    fps: readNumber(fpsInput, 30, 12, 60),
     zoomRate: Number(zoomRateInput.value) / 100,
     smoothGuard: smoothGuardInput.checked,
     cinematicMode: cinematicModeInput.checked,
@@ -171,6 +178,15 @@ function getSettings() {
   };
 }
 
+function readNumber(input, fallback, min, max) {
+  const value = input.value.trim() === "" ? NaN : Number(input.value);
+  return Number.isFinite(value) ? clamp(Math.round(value), min, max) : fallback;
+}
+
+function isBusy() {
+  return state.isLoading || state.isRecording || state.isPreparing;
+}
+
 function getTransitionFrames(settings) {
   return Math.max(8, Math.round(settings.frames / Math.max(0.25, settings.zoomRate)));
 }
@@ -183,6 +199,7 @@ function transitionKey(fromId, toId, settings, override) {
   return [
     fromId,
     toId,
+    settings.mode,
     settings.smoothGuard ? "guard" : "raw",
     settings.cinematicMode ? "cinema" : "plain",
     settings.patch.toFixed(3),
@@ -313,8 +330,12 @@ function setUploadHelp(message, tone = "") {
 
 function setUploadBusy(isBusy) {
   state.isLoading = isBusy;
-  fileInput.disabled = isBusy;
+  if (isBusy) {
+    state.isPlaying = false;
+    state.isPickingPortal = false;
+  }
   dropZone.classList.toggle("is-loading", isBusy);
+  updateStatus();
 }
 
 function createThumbnailUrl(canvas) {
@@ -341,13 +362,18 @@ function loadScript(src) {
     script.src = src;
     script.async = true;
     script.crossOrigin = "anonymous";
+    const timeout = setTimeout(() => fail(), 20000);
+    function fail() {
+      clearTimeout(timeout);
+      script.remove();
+      reject(new Error("HEIC converter could not be loaded. Try again when online."));
+    }
     script.addEventListener("load", () => {
+      clearTimeout(timeout);
       script.dataset.ready = "true";
       resolve();
     }, { once: true });
-    script.addEventListener("error", () => {
-      reject(new Error("HEIC converter could not be loaded"));
-    }, { once: true });
+    script.addEventListener("error", fail, { once: true });
     document.head.append(script);
   });
 }
@@ -356,7 +382,15 @@ async function getHeicConverter() {
   if (window.heic2any) return window.heic2any;
 
   if (!heicConverterPromise) {
-    heicConverterPromise = loadScript(HEIC_CONVERTER_URL);
+    heicConverterPromise = loadScript(HEIC_CONVERTER_URL).then(() => {
+      if (!window.heic2any) {
+        document.querySelector(`script[src="${HEIC_CONVERTER_URL}"]`)?.remove();
+        throw new Error("HEIC converter is unavailable");
+      }
+    }).catch((error) => {
+      heicConverterPromise = null;
+      throw error;
+    });
   }
 
   await heicConverterPromise;
@@ -467,7 +501,7 @@ async function decodePhotoFile(file) {
 }
 
 async function loadFiles(files) {
-  if (state.isLoading || state.isRecording) return;
+  if (isBusy()) return;
 
   const selectedFiles = [...files];
   const imageFiles = selectedFiles.filter(isLikelyImageFile);
@@ -476,12 +510,12 @@ async function loadFiles(files) {
   if (!selectedFiles.length) return;
 
   if (!imageFiles.length) {
-    statusText.textContent = "No images loaded";
     setUploadHelp("Try JPG, PNG, WebP, GIF, BMP, AVIF, HEIC, or HEIF.", "error");
     return;
   }
 
   const failed = [];
+  const loadedImages = [];
   let loadedCount = 0;
   let convertedCount = 0;
 
@@ -494,7 +528,7 @@ async function loadFiles(files) {
 
       try {
         const decoded = await decodePhotoFile(file);
-        state.images.push({
+        loadedImages.push({
           id: createId(),
           name: getReadableFileName(file),
           width: decoded.width,
@@ -509,6 +543,7 @@ async function loadFiles(files) {
       }
     }
   } finally {
+    state.images.push(...loadedImages);
     setUploadBusy(false);
   }
 
@@ -520,7 +555,7 @@ async function loadFiles(files) {
 
   updateStatus();
 
-  if (!loadedCount) {
+  if (!loadedCount && state.images.length === 0) {
     statusText.textContent = "No images loaded";
   }
 
@@ -597,6 +632,7 @@ function renderImageList() {
 }
 
 function moveImage(index, direction) {
+  if (isBusy()) return;
   const next = index + direction;
   if (next < 0 || next >= state.images.length) return;
   const [image] = state.images.splice(index, 1);
@@ -607,6 +643,7 @@ function moveImage(index, direction) {
 }
 
 function removeImage(index) {
+  if (isBusy()) return;
   const [image] = state.images.splice(index, 1);
   if (image?.url?.startsWith("blob:")) URL.revokeObjectURL(image.url);
   purgePortalOverrides();
@@ -617,6 +654,7 @@ function removeImage(index) {
 }
 
 function clearImages() {
+  if (isBusy()) return;
   state.images.forEach((image) => {
     if (image.url.startsWith("blob:")) URL.revokeObjectURL(image.url);
   });
@@ -633,37 +671,44 @@ function clearImages() {
 
 function updateStatus() {
   const count = state.images.length;
+  const busy = isBusy();
   if (count === 0) statusText.textContent = "Empty stack";
   else if (count === 1) statusText.textContent = "Add one more image";
   else statusText.textContent = `${count} images in loop`;
-  if (count < 2 || state.isRecording) {
+  if (count < 2 || busy) {
     state.isPlaying = false;
   }
-  playButton.disabled = count < 2 || state.isRecording;
-  stagePlayButton.disabled = count < 2 || state.isRecording;
-  shareButton.disabled = state.isRecording;
-  pngButton.disabled = state.isRecording;
-  webmButton.disabled = count < 2 || state.isRecording;
-  autoSortButton.disabled = count < 3 || state.isRecording || state.isLoading;
-  autoCinematicButton.disabled = state.isRecording || state.isLoading;
-  autoTuneButton.disabled = state.isRecording || state.isLoading;
-  portalPickButton.disabled = count < 2 || state.isRecording || state.isLoading;
-  portalClearButton.disabled = count < 2 || state.isRecording || state.isLoading;
-  controls.forEach((control) => { control.disabled = state.isRecording; });
+  playButton.disabled = count < 2 || busy;
+  stagePlayButton.disabled = count < 2 || busy;
+  shareButton.disabled = count === 0 || busy;
+  pngButton.disabled = count === 0 || busy;
+  webmButton.disabled = count < 2 || busy;
+  autoSortButton.disabled = count < 3 || busy;
+  autoCinematicButton.disabled = busy || renderModeInput.value === "stitched";
+  autoTuneButton.disabled = busy;
+  portalPickButton.disabled = count < 2 || busy;
+  portalClearButton.disabled = count < 2 || busy;
+  controls.forEach((control) => { control.disabled = busy; });
   for (const control of [timelineInput, clearButton, sampleButton, smoothDefaultsButton]) {
-    control.disabled = state.isRecording;
+    control.disabled = busy;
   }
-  fileInput.disabled = state.isLoading || state.isRecording;
-  if (state.isRecording) {
-    imageList.querySelectorAll("button").forEach((button) => { button.disabled = true; });
-  }
+  fileInput.disabled = busy;
+  cancelExportButton.classList.toggle("is-hidden", !state.isRecording);
+  cancelExportButton.disabled = Boolean(state.exportController?.signal.aborted);
+  imageList.querySelectorAll("li").forEach((item, index) => {
+    const [up, down, remove] = item.querySelectorAll("button");
+    up.disabled = busy || index === 0;
+    down.disabled = busy || index === count - 1;
+    remove.disabled = busy;
+  });
+  syncRenderMode();
   syncAnchorMode();
   syncPortalPickingUi();
   syncPlaybackUi();
 }
 
 function syncPortalPickingUi() {
-  const canPick = state.images.length >= 2 && !state.isRecording && !state.isLoading;
+  const canPick = state.images.length >= 2 && !isBusy();
   if (!canPick) state.isPickingPortal = false;
   portalPickButton.classList.toggle("is-active", state.isPickingPortal);
   portalPickButton.textContent = state.isPickingPortal ? "Click Preview" : "Pick Portal";
@@ -677,10 +722,34 @@ function syncPlaybackUi() {
   stagePlayButton.setAttribute("aria-label", `${label} loop`);
 }
 
-function togglePlayback() {
-  if (state.images.length < 2 || state.isRecording) return;
+async function prepareTransitions(settings, signal) {
+  for (let index = 0; index < state.images.length; index++) {
+    if (signal?.aborted) return;
+    statusText.textContent = `Preparing ${settings.mode === "stitched" ? "stitches" : "photos"} ${index + 1} of ${state.images.length}`;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (signal?.aborted) return;
+    getTransition(state.images[index], state.images[(index + 1) % state.images.length], settings);
+  }
+}
+
+async function togglePlayback() {
+  if (state.images.length < 2 || isBusy()) return;
   state.isPickingPortal = false;
-  state.isPlaying = !state.isPlaying;
+  if (state.isPlaying) {
+    state.isPlaying = false;
+  } else {
+    state.isPreparing = true;
+    updateStatus();
+    let error;
+    try { await prepareTransitions(getSettings()); } catch (failure) { error = failure; }
+    state.isPreparing = false;
+    updateStatus();
+    if (error) {
+      statusText.textContent = `Could not prepare the loop: ${error.message}`;
+      return;
+    }
+    state.isPlaying = true;
+  }
   state.lastTime = 0;
   syncPortalPickingUi();
   syncPlaybackUi();
@@ -688,11 +757,20 @@ function togglePlayback() {
 
 function syncAnchorMode() {
   const isAuto = autoAnchorInput.checked;
-  anchorXInput.disabled = isAuto || state.isRecording;
-  anchorYInput.disabled = isAuto || state.isRecording;
+  anchorXInput.disabled = isAuto || isBusy();
+  anchorYInput.disabled = isAuto || isBusy();
+}
+
+function syncRenderMode() {
+  const stitched = renderModeInput.value === "stitched";
+  renderModeHelp.textContent = stitched
+    ? "Photos are stitched into a fixed nested scene before playback. No fade-in reveal; only your photos are used."
+    : "Hidden photo detail gradually emerges as you zoom.";
+  for (const control of [cinematicModeInput, grainInput, symmetryInput, alignmentInput]) control.disabled = isBusy() || stitched;
 }
 
 function applySmoothDefaults() {
+  if (isBusy()) return;
   framesInput.value = "120";
   fpsInput.value = "30";
   zoomRateInput.value = "82";
@@ -718,7 +796,7 @@ function applySmoothDefaults() {
 }
 
 function autoTuneLoop() {
-  if (state.isRecording || state.isLoading) return;
+  if (isBusy()) return;
 
   state.portalOverrides.clear();
   cinematicModeInput.checked = false;
@@ -744,7 +822,7 @@ function autoTuneLoop() {
 }
 
 function applyAutoCinematic() {
-  if (state.isRecording || state.isLoading) return;
+  if (isBusy() || renderModeInput.value === "stitched") return;
 
   autoTuneLoop();
   cinematicModeInput.checked = true;
@@ -780,7 +858,7 @@ function setProgressToSegmentStart(segment) {
 }
 
 function togglePortalPickMode() {
-  if (state.images.length < 2 || state.isRecording || state.isLoading) return;
+  if (state.images.length < 2 || isBusy()) return;
 
   const current = getCurrentLoopSegment();
   if (!current) return;
@@ -801,6 +879,7 @@ function togglePortalPickMode() {
 }
 
 function clearCurrentPortalPick() {
+  if (isBusy()) return;
   const current = getCurrentLoopSegment();
   if (!current) return;
 
@@ -997,7 +1076,7 @@ function sortImagesBySimilarity(images) {
 }
 
 function autoSortImages() {
-  if (state.images.length < 3 || state.isRecording || state.isLoading) return;
+  if (state.images.length < 3 || isBusy()) return;
   state.isPickingPortal = false;
   state.images = sortImagesBySimilarity(state.images);
   state.progress = 0;
@@ -1111,7 +1190,7 @@ function drawCurrentFrame() {
 
 function tick(timestamp) {
   if (!state.lastTime) state.lastTime = timestamp;
-  const delta = timestamp - state.lastTime;
+  const delta = Math.min(100, timestamp - state.lastTime);
   state.lastTime = timestamp;
 
   if (state.isPlaying && !state.isRecording && state.images.length > 1) {
@@ -1126,6 +1205,7 @@ function tick(timestamp) {
 }
 
 async function createSampleSet() {
+  if (isBusy()) return;
   clearImages();
   const names = ["street-light", "orchid-glass", "desert-door"];
   const colors = [
@@ -1280,32 +1360,36 @@ async function shareCurrentFrame() {
 }
 
 async function recordWebm() {
-  if (state.images.length < 2 || state.isRecording) return;
+  if (state.images.length < 2 || isBusy()) return;
   if (!previewCanvas.captureStream || !window.MediaRecorder) {
     statusText.textContent = "Recording is not supported";
     return;
   }
 
+  const previousProgress = state.progress;
+  const previousPlaying = state.isPlaying;
+  const controller = new AbortController();
+  state.exportController = controller;
   state.isRecording = true;
   state.isPlaying = false;
   state.isPickingPortal = false;
   updateStatus();
   webmButton.textContent = "Recording";
   let stream;
+  let recorder;
   let recordingError;
+  let completed = false;
   try {
     const settings = getSettings();
-    // Prepare every pair before capture so image analysis cannot stall a frame.
-    state.images.forEach((image, index) => {
-      getTransition(image, state.images[(index + 1) % state.images.length], settings);
-    });
+    await prepareTransitions(settings, controller.signal);
+    if (controller.signal.aborted) return;
     state.progress = 0;
     timelineInput.value = "0";
     drawCurrentFrame();
     const chunks = [];
     stream = previewCanvas.captureStream(settings.fps);
     const mimeType = getRecorderMimeType();
-    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunks.push(event.data);
     };
@@ -1319,29 +1403,63 @@ async function recordWebm() {
     const started = performance.now();
     for (let frame = 0; frame < totalFrames; frame++) {
       if (captureError) throw captureError;
+      if (controller.signal.aborted) break;
+      if (recorder.state === "inactive") throw new Error("Video capture stopped early");
       state.progress = frame / totalFrames;
       timelineInput.value = String(Math.round(state.progress * 1000));
       drawCurrentFrame();
+      statusText.textContent = `Exporting video ${Math.round((frame + 1) / totalFrames * 100)}%`;
       const nextFrameAt = started + (frame + 1) * 1000 / settings.fps;
-      await new Promise((resolve) => setTimeout(resolve, Math.max(0, nextFrameAt - performance.now())));
+      await waitForExportFrame(Math.max(0, nextFrameAt - performance.now()), controller.signal);
     }
     if (recorder.state !== "inactive") recorder.stop();
-    await finished;
+    let stopTimer;
+    try {
+      await Promise.race([finished, new Promise((_, reject) => {
+        stopTimer = setTimeout(() => reject(new Error("Video capture did not finish")), 5000);
+      })]);
+    } finally { clearTimeout(stopTimer); }
     if (captureError) throw captureError;
+    if (controller.signal.aborted) return;
     const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || "video/webm" });
     if (!blob.size) throw new Error("No video frames were captured");
     const fileName = `zoom-loop.${getVideoExtension(blob.type)}`;
     await shareOrDownloadBlob(blob, fileName, "Zoom Loop video");
+    completed = true;
   } catch (error) {
     recordingError = error;
   } finally {
+    if (recorder && recorder.state !== "inactive") {
+      try { recorder.stop(); } catch { /* Tracks are released below, too. */ }
+    }
     stream?.getTracks().forEach((track) => track.stop());
     state.isRecording = false;
+    state.exportController = null;
+    state.progress = previousProgress;
+    state.isPlaying = previousPlaying;
+    state.lastTime = 0;
+    timelineInput.value = String(Math.round(previousProgress * 1000));
     webmButton.textContent = "Video";
     renderImageList();
     updateStatus();
+    drawCurrentFrame();
     if (recordingError) statusText.textContent = `Recording failed: ${recordingError.message}`;
+    else if (controller.signal.aborted) statusText.textContent = "Export cancelled";
+    else if (completed) statusText.textContent = "Video ready";
   }
+}
+
+function waitForExportFrame(ms, signal) {
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal.addEventListener("abort", finish, { once: true });
+    if (signal.aborted) finish();
+  });
 }
 
 function getRecorderMimeType() {
@@ -1394,6 +1512,11 @@ stagePlayButton.addEventListener("click", togglePlayback);
 pngButton.addEventListener("click", downloadCanvasPng);
 shareButton.addEventListener("click", shareCurrentFrame);
 webmButton.addEventListener("click", recordWebm);
+cancelExportButton.addEventListener("click", () => {
+  state.exportController?.abort();
+  cancelExportButton.disabled = true;
+  statusText.textContent = "Cancelling export…";
+});
 sampleButton.addEventListener("click", createSampleSet);
 autoSortButton.addEventListener("click", autoSortImages);
 clearButton.addEventListener("click", clearImages);
@@ -1413,8 +1536,12 @@ timelineInput.addEventListener("input", () => {
 
 controls.forEach((control) => {
   control.addEventListener("input", () => {
-    syncAnchorMode();
-    if (control === sizeInput) setCanvasSize(Number(sizeInput.value));
+    if (control === renderModeInput) {
+      state.isPlaying = false;
+      state.isPickingPortal = false;
+    }
+    updateStatus();
+    if (control === sizeInput) setCanvasSize(getSettings().size);
     if (
       control !== sizeInput &&
       control !== framesInput &&
@@ -1427,10 +1554,17 @@ controls.forEach((control) => {
   });
 });
 
+for (const control of [framesInput, fpsInput]) {
+  control.addEventListener("change", () => {
+    control.value = String(control === framesInput ? getSettings().frames : getSettings().fps);
+  });
+}
+
 registerServiceWorker();
 setupInstallPrompt();
 setCanvasSize(Number(sizeInput.value));
 const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get("mode") === "stitched") renderModeInput.value = "stitched";
 if (urlParams.get("auto") === "1") {
   autoAnchorInput.checked = true;
 }

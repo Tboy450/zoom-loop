@@ -10,10 +10,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Zoom Loop">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="manifest.webmanifest?v8">
+    <link rel="manifest" href="manifest.webmanifest?v9">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
-    <link rel="stylesheet" href="styles.css?v8">
+    <link rel="stylesheet" href="styles.css?v9">
   </head>
   <body>
     <main class="app-shell">
@@ -29,6 +29,7 @@
             <button id="shareButton" type="button">Share</button>
             <button id="pngButton" type="button">PNG</button>
             <button id="webmButton" type="button">Video</button>
+            <button id="cancelExportButton" class="is-hidden" type="button">Cancel export</button>
           </div>
         </div>
 
@@ -68,6 +69,15 @@
 
         <section class="panel-section">
           <h2>Render</h2>
+
+          <label class="field">
+            <span>Mode</span>
+            <select id="renderModeInput" aria-describedby="renderModeHelp">
+              <option value="blend">Photo Blend</option>
+              <option value="stitched">Stitched World</option>
+            </select>
+          </label>
+          <p id="renderModeHelp" class="upload-help">Hidden photo detail gradually emerges as you zoom.</p>
 
           <label class="field">
             <span>Canvas</span>
@@ -177,7 +187,7 @@
       </aside>
     </main>
 
-    <script src="zoom-renderer.js?v8"></script>
-    <script src="app.js?v8"></script>
+    <script src="zoom-renderer.js?v9"></script>
+    <script src="app.js?v9"></script>
   </body>
 </html>
