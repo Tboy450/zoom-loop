@@ -46,9 +46,8 @@ const symmetryInput = document.querySelector("#symmetryInput");
 const alignmentInput = document.querySelector("#alignmentInput");
 
 const SOURCE_SIZE = 1024;
-const MICRO_SIZE = 640;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v6";
+const ASSET_VERSION = "v7";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -78,7 +77,6 @@ const state = {
   dragDepth: 0
 };
 
-const featherMaskCache = new Map();
 let deferredInstallPrompt = null;
 let heicConverterPromise = null;
 
@@ -104,27 +102,6 @@ const controls = [
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
-}
-
-function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
-function easeInOutCubic(t) {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-function easeInOutSine(t) {
-  return -(Math.cos(Math.PI * t) - 1) / 2;
-}
-
-function smoothstep(edge0, edge1, value) {
-  const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
-  return t * t * (3 - 2 * t);
-}
-
-function positiveModulo(value, divisor) {
-  return ((value % divisor) + divisor) % divisor;
 }
 
 function makeCanvas(width, height) {
@@ -489,7 +466,7 @@ async function decodePhotoFile(file) {
 }
 
 async function loadFiles(files) {
-  if (state.isLoading) return;
+  if (state.isLoading || state.isRecording) return;
 
   const selectedFiles = [...files];
   const imageFiles = selectedFiles.filter(isLikelyImageFile);
@@ -671,6 +648,15 @@ function updateStatus() {
   autoTuneButton.disabled = state.isRecording || state.isLoading;
   portalPickButton.disabled = count < 2 || state.isRecording || state.isLoading;
   portalClearButton.disabled = count < 2 || state.isRecording || state.isLoading;
+  controls.forEach((control) => { control.disabled = state.isRecording; });
+  for (const control of [timelineInput, clearButton, sampleButton, smoothDefaultsButton]) {
+    control.disabled = state.isRecording;
+  }
+  fileInput.disabled = state.isLoading || state.isRecording;
+  if (state.isRecording) {
+    imageList.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+  }
+  syncAnchorMode();
   syncPortalPickingUi();
   syncPlaybackUi();
 }
@@ -701,8 +687,8 @@ function togglePlayback() {
 
 function syncAnchorMode() {
   const isAuto = autoAnchorInput.checked;
-  anchorXInput.disabled = isAuto;
-  anchorYInput.disabled = isAuto;
+  anchorXInput.disabled = isAuto || state.isRecording;
+  anchorYInput.disabled = isAuto || state.isRecording;
 }
 
 function applySmoothDefaults() {
@@ -710,15 +696,15 @@ function applySmoothDefaults() {
   fpsInput.value = "30";
   zoomRateInput.value = "82";
   smoothGuardInput.checked = true;
-  patchInput.value = "16";
+  patchInput.value = "12";
   autoAnchorInput.checked = true;
   anchorXInput.value = "50";
   anchorYInput.value = "50";
-  bindInput.value = "78";
-  sampleBlendInput.value = "68";
-  edgeBlendInput.value = "76";
+  bindInput.value = "100";
+  sampleBlendInput.value = "78";
+  edgeBlendInput.value = "86";
   shapeMorphInput.value = "72";
-  grainInput.value = "16";
+  grainInput.value = "0";
   symmetryInput.value = "1";
   alignmentInput.value = "0";
 
@@ -763,11 +749,11 @@ function applyAutoCinematic() {
   cinematicModeInput.checked = true;
   framesInput.value = "138";
   zoomRateInput.value = "76";
-  bindInput.value = "84";
+  bindInput.value = "100";
   sampleBlendInput.value = "74";
   edgeBlendInput.value = "82";
   shapeMorphInput.value = "80";
-  grainInput.value = "8";
+  grainInput.value = "0";
 
   invalidateTransitions();
   updateStatus();
@@ -777,7 +763,7 @@ function applyAutoCinematic() {
       : "Auto cinematic transition settings loaded.",
     "ok"
   );
-  setPortalHelp("Auto Cinematic applied: matched color, softer reveal, and smoother camera motion.", "ok");
+  setPortalHelp("Auto Cinematic applied: deeper texture blending and a gradual detail reveal.", "ok");
   drawCurrentFrame();
 }
 
@@ -878,31 +864,7 @@ function drawSingleImage() {
   previewCtx.drawImage(state.images[0].canvas, 0, 0, size, size);
 }
 
-function getParentPatchColor(parentCanvas, settings) {
-  const ctx = parentCanvas.getContext("2d", { willReadFrequently: true });
-  const patchSize = Math.max(8, Math.round(SOURCE_SIZE * settings.patch));
-  const x = clamp(Math.round(SOURCE_SIZE * settings.anchorX - patchSize / 2), 0, SOURCE_SIZE - patchSize);
-  const y = clamp(Math.round(SOURCE_SIZE * settings.anchorY - patchSize / 2), 0, SOURCE_SIZE - patchSize);
-  const data = ctx.getImageData(x, y, patchSize, patchSize).data;
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  const step = 16;
-  let count = 0;
 
-  for (let i = 0; i < data.length; i += 4 * step) {
-    r += data[i];
-    g += data[i + 1];
-    b += data[i + 2];
-    count++;
-  }
-
-  return {
-    r: r / count,
-    g: g / count,
-    b: b / count
-  };
-}
 
 function summarizePixels(data, width, height, step) {
   let r = 0;
@@ -960,17 +922,6 @@ function getCanvasSignatureCached(canvas) {
     canvas._zoomLoopSignature = getCanvasSignature(canvas);
   }
   return canvas._zoomLoopSignature;
-}
-
-function mixSignature(first, second, mix) {
-  return {
-    r: lerp(first.r, second.r, mix),
-    g: lerp(first.g, second.g, mix),
-    b: lerp(first.b, second.b, mix),
-    luma: lerp(first.luma, second.luma, mix),
-    contrast: lerp(first.contrast, second.contrast, mix),
-    saturation: lerp(first.saturation, second.saturation, mix)
-  };
 }
 
 function getImageSignature(image) {
@@ -1049,552 +1000,11 @@ function autoSortImages() {
   drawCurrentFrame();
 }
 
-function getPatchSignature(ctx, x, y, size) {
-  const data = ctx.getImageData(x, y, size, size).data;
-  const step = Math.max(4, Math.floor(size / 24));
-  return summarizePixels(data, size, size, step);
-}
-
-function getSurroundingSignature(ctx, x, y, size) {
-  const ring = Math.max(12, Math.round(size * 0.34));
-  const outerX = clamp(x - ring, 0, SOURCE_SIZE - 1);
-  const outerY = clamp(y - ring, 0, SOURCE_SIZE - 1);
-  const outerMaxX = clamp(x + size + ring, 1, SOURCE_SIZE);
-  const outerMaxY = clamp(y + size + ring, 1, SOURCE_SIZE);
-  const outerW = Math.max(1, outerMaxX - outerX);
-  const outerH = Math.max(1, outerMaxY - outerY);
-  const data = ctx.getImageData(outerX, outerY, outerW, outerH).data;
-  const step = Math.max(4, Math.floor(Math.max(outerW, outerH) / 28));
-  return summarizePixels(data, outerW, outerH, step);
-}
-
-function getTransitionBlendSignature(parentCanvas, settings) {
-  const ctx = parentCanvas.getContext("2d", { willReadFrequently: true });
-  const patchSize = Math.max(16, Math.round(SOURCE_SIZE * settings.patch));
-  const x = clamp(Math.round(SOURCE_SIZE * settings.anchorX - patchSize / 2), 0, SOURCE_SIZE - patchSize);
-  const y = clamp(Math.round(SOURCE_SIZE * settings.anchorY - patchSize / 2), 0, SOURCE_SIZE - patchSize);
-  const patchSignature = getPatchSignature(ctx, x, y, patchSize);
-  const surroundingSignature = getSurroundingSignature(ctx, x, y, patchSize);
-  return mixSignature(patchSignature, surroundingSignature, 0.38);
-}
-
-function scorePatchSignature(patchSignature, targetSignature) {
-  const red = (patchSignature.r - targetSignature.r) / 255;
-  const green = (patchSignature.g - targetSignature.g) / 255;
-  const blue = (patchSignature.b - targetSignature.b) / 255;
-  const colorDistance = Math.sqrt(red * red + green * green + blue * blue) / Math.sqrt(3);
-  const lumaDistance = Math.abs(patchSignature.luma - targetSignature.luma) / 255;
-  const contrastDistance = Math.abs(patchSignature.contrast - targetSignature.contrast) / 128;
-  const saturationDistance = Math.abs(patchSignature.saturation - targetSignature.saturation);
-
-  return (
-    colorDistance * 0.52 +
-    lumaDistance * 0.22 +
-    contrastDistance * 0.18 +
-    saturationDistance * 0.08
-  );
-}
-
-function getAutoAnchorPenalty(anchorX, anchorY, patchRatio) {
-  const edgeDistance = Math.min(anchorX, anchorY, 1 - anchorX, 1 - anchorY);
-  const softSafeEdge = Math.max(0.18, patchRatio * 0.82);
-  const hardSafeEdge = Math.max(0.1, patchRatio * 0.55);
-  const edgePenalty = 1 - smoothstep(hardSafeEdge, softSafeEdge, edgeDistance);
-  const dx = anchorX - 0.5;
-  const dy = anchorY - 0.5;
-  const centerDistance = Math.sqrt(dx * dx + dy * dy) / Math.SQRT1_2;
-  const driftPenalty = smoothstep(0.38, 0.72, centerDistance);
-
-  return edgePenalty * 0.74 + driftPenalty * 0.26;
-}
-
-function scoreAutoAnchorCandidate(parentCtx, x, y, patchSize, targetSignature, settings) {
-  const patchSignature = getPatchSignature(parentCtx, x, y, patchSize);
-  const surroundingSignature = getSurroundingSignature(parentCtx, x, y, patchSize);
-  const anchorX = (x + patchSize / 2) / SOURCE_SIZE;
-  const anchorY = (y + patchSize / 2) / SOURCE_SIZE;
-  const patchRatio = patchSize / SOURCE_SIZE;
-  const directMatch = scorePatchSignature(patchSignature, targetSignature);
-  const surroundingMatch = scorePatchSignature(surroundingSignature, targetSignature);
-  const localBlend = scorePatchSignature(patchSignature, surroundingSignature);
-  const framingPenalty = getAutoAnchorPenalty(anchorX, anchorY, patchRatio);
-  const contrastFloor = targetSignature.contrast * 0.38;
-  const flatPenalty = patchSignature.contrast < contrastFloor
-    ? (contrastFloor - patchSignature.contrast) / Math.max(12, contrastFloor)
-    : 0;
-
-  return (
-    directMatch * 0.48 +
-    surroundingMatch * 0.24 +
-    localBlend * 0.1 +
-    framingPenalty * 0.26 +
-    flatPenalty * 0.1
-  );
-}
-
-function findAutoAnchor(parentCanvas, childCanvas, settings) {
-  const parentCtx = parentCanvas.getContext("2d", { willReadFrequently: true });
-  const targetSignature = getCanvasSignature(childCanvas);
-  const patchSize = Math.max(16, Math.round(SOURCE_SIZE * settings.patch));
-  const patchRatio = patchSize / SOURCE_SIZE;
-  const safeMargin = Math.max(0.2, patchRatio * 0.88);
-  const minCenter = Math.max(patchSize / 2, SOURCE_SIZE * safeMargin);
-  const maxCenter = Math.min(SOURCE_SIZE - patchSize / 2, SOURCE_SIZE * (1 - safeMargin));
-  const scanMinCenter = minCenter < maxCenter ? minCenter : patchSize / 2;
-  const scanMaxCenter = minCenter < maxCenter ? maxCenter : SOURCE_SIZE - patchSize / 2;
-  const gridSize = 13;
-  let best = {
-    anchorX: settings.anchorX,
-    anchorY: settings.anchorY,
-    score: Infinity
-  };
-
-  for (let gridY = 0; gridY < gridSize; gridY++) {
-    const centerY = lerp(scanMinCenter, scanMaxCenter, gridY / (gridSize - 1));
-    for (let gridX = 0; gridX < gridSize; gridX++) {
-      const centerX = lerp(scanMinCenter, scanMaxCenter, gridX / (gridSize - 1));
-      const x = clamp(Math.round(centerX - patchSize / 2), 0, SOURCE_SIZE - patchSize);
-      const y = clamp(Math.round(centerY - patchSize / 2), 0, SOURCE_SIZE - patchSize);
-      const score = scoreAutoAnchorCandidate(parentCtx, x, y, patchSize, targetSignature, settings);
-
-      if (score < best.score) {
-        best = {
-          anchorX: (x + patchSize / 2) / SOURCE_SIZE,
-          anchorY: (y + patchSize / 2) / SOURCE_SIZE,
-          score
-        };
-      }
-    }
-  }
-
-  const refineStep = Math.max(4, Math.round(patchSize * 0.22));
-  for (let pass = 0; pass < 2; pass++) {
-    const step = Math.max(2, Math.round(refineStep / (pass + 1)));
-    const baseX = best.anchorX * SOURCE_SIZE;
-    const baseY = best.anchorY * SOURCE_SIZE;
-
-    for (let offsetY = -1; offsetY <= 1; offsetY++) {
-      for (let offsetX = -1; offsetX <= 1; offsetX++) {
-        const centerX = clamp(baseX + offsetX * step, patchSize / 2, SOURCE_SIZE - patchSize / 2);
-        const centerY = clamp(baseY + offsetY * step, patchSize / 2, SOURCE_SIZE - patchSize / 2);
-        const x = clamp(Math.round(centerX - patchSize / 2), 0, SOURCE_SIZE - patchSize);
-        const y = clamp(Math.round(centerY - patchSize / 2), 0, SOURCE_SIZE - patchSize);
-        const score = scoreAutoAnchorCandidate(parentCtx, x, y, patchSize, targetSignature, settings);
-
-        if (score < best.score) {
-          best = {
-            anchorX: (x + patchSize / 2) / SOURCE_SIZE,
-            anchorY: (y + patchSize / 2) / SOURCE_SIZE,
-            score
-          };
-        }
-      }
-    }
-  }
-
-  return best;
-}
-
-function resolvePortalSettings(parentCanvas, childCanvas, settings, override) {
-  if (override) {
-    return {
-      ...settings,
-      autoAnchor: false,
-      anchorX: override.anchorX,
-      anchorY: override.anchorY
-    };
-  }
-
-  if (!settings.autoAnchor) return settings;
-
-  const anchor = findAutoAnchor(parentCanvas, childCanvas, settings);
-  return {
-    ...settings,
-    anchorX: anchor.anchorX,
-    anchorY: anchor.anchorY
-  };
-}
-
-function getPortalSampleIndex(x, y, settings) {
-  const symmetry = Math.max(1, Math.round(settings.symmetry));
-  if (symmetry === 1) return (y * MICRO_SIZE + x) * 4;
-
-  const center = (MICRO_SIZE - 1) / 2;
-  const dx = x - center;
-  const dy = y - center;
-  const radius = Math.sqrt(dx * dx + dy * dy);
-  const sector = TAU / symmetry;
-  const alignment = settings.alignment * TAU;
-  let angle = positiveModulo(Math.atan2(dy, dx) - alignment, TAU);
-  let foldedAngle = positiveModulo(angle, sector);
-
-  if (foldedAngle > sector / 2) {
-    foldedAngle = sector - foldedAngle;
-  }
-
-  const sampleAngle = foldedAngle - sector / 4 + alignment;
-  const sampleX = clamp(Math.round(center + Math.cos(sampleAngle) * radius), 0, MICRO_SIZE - 1);
-  const sampleY = clamp(Math.round(center + Math.sin(sampleAngle) * radius), 0, MICRO_SIZE - 1);
-  return (sampleY * MICRO_SIZE + sampleX) * 4;
-}
-
-function getPortalColor(x, y, childData, settings) {
-  const spread = Math.max(1, Math.round(1 + settings.sampleBlend * 7));
-  const samples = settings.sampleBlend > 0.04
-    ? [
-        [0, 0, 4],
-        [spread, 0, 1],
-        [-spread, 0, 1],
-        [0, spread, 1],
-        [0, -spread, 1]
-      ]
-    : [[0, 0, 1]];
-
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  let weight = 0;
-
-  for (const [offsetX, offsetY, sampleWeight] of samples) {
-    const sampleX = clamp(x + offsetX, 0, MICRO_SIZE - 1);
-    const sampleY = clamp(y + offsetY, 0, MICRO_SIZE - 1);
-    const directIndex = (sampleY * MICRO_SIZE + sampleX) * 4;
-    const foldedIndex = getPortalSampleIndex(sampleX, sampleY, settings);
-    const symmetryStrength = settings.smoothGuard
-      ? clamp(0.42 + (settings.symmetry - 1) / 7 * 0.38, 0, 0.8)
-      : 1;
-
-    r += lerp(childData.data[directIndex], childData.data[foldedIndex], symmetryStrength) * sampleWeight;
-    g += lerp(childData.data[directIndex + 1], childData.data[foldedIndex + 1], symmetryStrength) * sampleWeight;
-    b += lerp(childData.data[directIndex + 2], childData.data[foldedIndex + 2], symmetryStrength) * sampleWeight;
-    weight += sampleWeight;
-  }
-
-  return {
-    r: r / weight,
-    g: g / weight,
-    b: b / weight
-  };
-}
-
-function createMatchedChildCanvas(parentCanvas, childCanvas, settings) {
-  if (!settings.cinematicMode) return childCanvas;
-
-  const matchedCanvas = makeCanvas(SOURCE_SIZE, SOURCE_SIZE);
-  const matchedCtx = matchedCanvas.getContext("2d", { alpha: false, willReadFrequently: true });
-  const targetSignature = getTransitionBlendSignature(parentCanvas, settings);
-  const childSignature = getCanvasSignatureCached(childCanvas);
-  const colorData = {
-    contrastScale: clamp(
-      (targetSignature.contrast + 24) / Math.max(24, childSignature.contrast + 24),
-      0.84,
-      1.2
-    ),
-    saturationScale: clamp(
-      (targetSignature.saturation + 0.08) / Math.max(0.08, childSignature.saturation + 0.08),
-      0.82,
-      1.22
-    ),
-    balanceR: (targetSignature.r - targetSignature.luma) - (childSignature.r - childSignature.luma),
-    balanceG: (targetSignature.g - targetSignature.luma) - (childSignature.g - childSignature.luma),
-    balanceB: (targetSignature.b - targetSignature.luma) - (childSignature.b - childSignature.luma)
-  };
-
-  matchedCtx.drawImage(childCanvas, 0, 0, SOURCE_SIZE, SOURCE_SIZE);
-  const imageData = matchedCtx.getImageData(0, 0, SOURCE_SIZE, SOURCE_SIZE);
-  const data = imageData.data;
-
-  for (let index = 0; index < data.length; index += 4) {
-    const sourceR = data[index];
-    const sourceG = data[index + 1];
-    const sourceB = data[index + 2];
-    const luma = sourceR * 0.2126 + sourceG * 0.7152 + sourceB * 0.0722;
-    const remappedLuma = targetSignature.luma + (luma - childSignature.luma) * colorData.contrastScale;
-    const gradedR = remappedLuma + (sourceR - luma) * colorData.saturationScale + colorData.balanceR * 0.36;
-    const gradedG = remappedLuma + (sourceG - luma) * colorData.saturationScale + colorData.balanceG * 0.36;
-    const gradedB = remappedLuma + (sourceB - luma) * colorData.saturationScale + colorData.balanceB * 0.36;
-
-    data[index] = clamp(lerp(sourceR, gradedR, 0.72), 0, 255);
-    data[index + 1] = clamp(lerp(sourceG, gradedG, 0.72), 0, 255);
-    data[index + 2] = clamp(lerp(sourceB, gradedB, 0.72), 0, 255);
-  }
-
-  matchedCtx.putImageData(imageData, 0, 0);
-  matchedCanvas._zoomLoopSignature = getCanvasSignature(matchedCanvas);
-  return matchedCanvas;
-}
-
-function buildMicroCanvas(parentCanvas, childCanvas, settings) {
-  const sourceParent = makeCanvas(MICRO_SIZE, MICRO_SIZE);
-  const sourceChild = makeCanvas(MICRO_SIZE, MICRO_SIZE);
-  const output = makeCanvas(MICRO_SIZE, MICRO_SIZE);
-  const parentCtx = sourceParent.getContext("2d", { alpha: false, willReadFrequently: true });
-  const childCtx = sourceChild.getContext("2d", { alpha: false, willReadFrequently: true });
-  const outputCtx = output.getContext("2d", { alpha: false });
-
-  const patch = settings.patch * SOURCE_SIZE;
-  const px = clamp(settings.anchorX * SOURCE_SIZE - patch / 2, 0, SOURCE_SIZE - patch);
-  const py = clamp(settings.anchorY * SOURCE_SIZE - patch / 2, 0, SOURCE_SIZE - patch);
-
-  const distortionLoad = clamp(
-    settings.grain * 0.45 +
-      settings.sampleBlend * 0.22 +
-      settings.edgeBlend * 0.16 +
-      ((settings.symmetry - 1) / 7) * 0.17,
-    0,
-    1
-  );
-  const grainStrength = settings.smoothGuard
-    ? settings.grain * lerp(1, 0.42, distortionLoad)
-    : settings.grain;
-  const bind = settings.smoothGuard
-    ? clamp(settings.bind + distortionLoad * 0.08, 0, 0.92)
-    : settings.bind;
-
-  parentCtx.imageSmoothingEnabled = settings.smoothGuard;
-  parentCtx.imageSmoothingQuality = "high";
-  parentCtx.drawImage(parentCanvas, px, py, patch, patch, 0, 0, MICRO_SIZE, MICRO_SIZE);
-  childCtx.imageSmoothingEnabled = true;
-  childCtx.imageSmoothingQuality = "high";
-  childCtx.drawImage(childCanvas, 0, 0, MICRO_SIZE, MICRO_SIZE);
-
-  const parentData = parentCtx.getImageData(0, 0, MICRO_SIZE, MICRO_SIZE);
-  const childData = childCtx.getImageData(0, 0, MICRO_SIZE, MICRO_SIZE);
-  const result = outputCtx.createImageData(MICRO_SIZE, MICRO_SIZE);
-  const block = Math.max(1, Math.round(1 + grainStrength * 18));
-  const baseColor = getParentPatchColor(parentCanvas, settings);
-
-  for (let y = 0; y < MICRO_SIZE; y++) {
-    const blockY = Math.floor(y / block) * block;
-    for (let x = 0; x < MICRO_SIZE; x++) {
-      const index = (y * MICRO_SIZE + x) * 4;
-      const blockX = Math.floor(x / block) * block;
-      const sampleIndex = (blockY * MICRO_SIZE + blockX) * 4;
-      const childColor = getPortalColor(x, y, childData, settings);
-      const cr = childColor.r;
-      const cg = childColor.g;
-      const cb = childColor.b;
-      const localPr = parentData.data[index];
-      const localPg = parentData.data[index + 1];
-      const localPb = parentData.data[index + 2];
-      const pr = lerp(localPr, parentData.data[sampleIndex], grainStrength);
-      const pg = lerp(localPg, parentData.data[sampleIndex + 1], grainStrength);
-      const pb = lerp(localPb, parentData.data[sampleIndex + 2], grainStrength);
-      const luma = (cr * 0.2126 + cg * 0.7152 + cb * 0.0722) / 255;
-      const tintBoost = 0.48 + luma * (0.88 + settings.sampleBlend * 0.22);
-      const chroma = 0.18 * (1 - settings.bind) * (1 - settings.sampleBlend * 0.45);
-      const neutral = luma * 255;
-      const boundR = clamp(pr * tintBoost + baseColor.r * 0.08 + (cr - neutral) * chroma, 0, 255);
-      const boundG = clamp(pg * tintBoost + baseColor.g * 0.08 + (cg - neutral) * chroma, 0, 255);
-      const boundB = clamp(pb * tintBoost + baseColor.b * 0.08 + (cb - neutral) * chroma, 0, 255);
-      const noise = ((x * 13 + y * 17) % 11) / 10 - 0.5;
-      const dither = noise * grainStrength * (1 - settings.sampleBlend * 0.55) * 22;
-      const edgeDistance = Math.min(x, y, MICRO_SIZE - 1 - x, MICRO_SIZE - 1 - y) / MICRO_SIZE;
-      const edgeWidth = 0.012 + settings.sampleBlend * 0.12 + settings.edgeBlend * 0.18;
-      const edgeBlend = smoothstep(0, edgeWidth, edgeDistance);
-
-      result.data[index] = clamp(lerp(localPr, lerp(cr, boundR, bind) + dither, edgeBlend), 0, 255);
-      result.data[index + 1] = clamp(lerp(localPg, lerp(cg, boundG, bind) + dither, edgeBlend), 0, 255);
-      result.data[index + 2] = clamp(lerp(localPb, lerp(cb, boundB, bind) + dither, edgeBlend), 0, 255);
-      result.data[index + 3] = 255;
-    }
-  }
-
-  outputCtx.putImageData(result, 0, 0);
-  return output;
-}
-
-function getFeatherMask(layerSize, featherSize, roundness) {
-  const safeLayerSize = Math.max(1, Math.round(layerSize));
-  const safeFeatherSize = Math.max(1, Math.round(featherSize));
-  const safeRoundness = Math.round(clamp(roundness, 0, 1) * 20) / 20;
-  const key = `${safeLayerSize}:${safeFeatherSize}:${safeRoundness}`;
-
-  if (featherMaskCache.has(key)) {
-    return featherMaskCache.get(key);
-  }
-
-  if (featherMaskCache.size > 80) {
-    featherMaskCache.clear();
-  }
-
-  const mask = makeCanvas(safeLayerSize, safeLayerSize);
-  const maskCtx = mask.getContext("2d");
-  const imageData = maskCtx.createImageData(safeLayerSize, safeLayerSize);
-  const center = (safeLayerSize - 1) / 2;
-  const radius = safeLayerSize / 2;
-
-  for (let y = 0; y < safeLayerSize; y++) {
-    for (let x = 0; x < safeLayerSize; x++) {
-      const index = (y * safeLayerSize + x) * 4;
-      const rectDistance = Math.min(x, y, safeLayerSize - 1 - x, safeLayerSize - 1 - y);
-      const dx = x - center;
-      const dy = y - center;
-      const circleDistance = radius - Math.sqrt(dx * dx + dy * dy);
-      const rectAlpha = smoothstep(0, safeFeatherSize, rectDistance);
-      const circleAlpha = smoothstep(0, safeFeatherSize, circleDistance);
-      const alpha = lerp(rectAlpha, circleAlpha, safeRoundness) * 255;
-
-      imageData.data[index] = 255;
-      imageData.data[index + 1] = 255;
-      imageData.data[index + 2] = 255;
-      imageData.data[index + 3] = alpha;
-    }
-  }
-
-  maskCtx.putImageData(imageData, 0, 0);
-  featherMaskCache.set(key, mask);
-  return mask;
-}
-
-function getCenterMask(layerSize, inset, innerSize, fadeSize, roundness) {
-  const safeLayerSize = Math.max(1, Math.round(layerSize));
-  const safeInset = Math.round(inset);
-  const safeInnerSize = Math.max(1, Math.round(innerSize));
-  const safeFadeSize = Math.max(1, Math.round(fadeSize));
-  const safeRoundness = Math.round(clamp(roundness, 0, 1) * 20) / 20;
-  const key = `center:${safeLayerSize}:${safeInset}:${safeInnerSize}:${safeFadeSize}:${safeRoundness}`;
-
-  if (featherMaskCache.has(key)) {
-    return featherMaskCache.get(key);
-  }
-
-  if (featherMaskCache.size > 80) {
-    featherMaskCache.clear();
-  }
-
-  const mask = makeCanvas(safeLayerSize, safeLayerSize);
-  const maskCtx = mask.getContext("2d");
-  const imageData = maskCtx.createImageData(safeLayerSize, safeLayerSize);
-  const max = safeInset + safeInnerSize - 1;
-  const center = safeInset + (safeInnerSize - 1) / 2;
-  const radius = safeInnerSize / 2;
-
-  for (let y = 0; y < safeLayerSize; y++) {
-    for (let x = 0; x < safeLayerSize; x++) {
-      const index = (y * safeLayerSize + x) * 4;
-      let alpha = 0;
-
-      if (x >= safeInset && x <= max && y >= safeInset && y <= max) {
-        const rectDistance = Math.min(x - safeInset, y - safeInset, max - x, max - y);
-        const dx = x - center;
-        const dy = y - center;
-        const circleDistance = radius - Math.sqrt(dx * dx + dy * dy);
-        const rectAlpha = smoothstep(0, safeFadeSize, rectDistance);
-        const circleAlpha = smoothstep(0, safeFadeSize, circleDistance);
-        alpha = lerp(rectAlpha, circleAlpha, safeRoundness) * 255;
-      }
-
-      imageData.data[index] = 255;
-      imageData.data[index + 1] = 255;
-      imageData.data[index + 2] = 255;
-      imageData.data[index + 3] = alpha;
-    }
-  }
-
-  maskCtx.putImageData(imageData, 0, 0);
-  featherMaskCache.set(key, mask);
-  return mask;
-}
-
-function drawRevealedChild(ctx, childCanvas, x, y, size, reveal, settings) {
-  if (reveal <= 0) return;
-
-  const settle = settings.cinematicMode
-    ? smoothstep(0.08, 0.9, reveal)
-    : reveal;
-  const blurRadius = settings.cinematicMode
-    ? (1 - settle) * Math.max(0.8, size * 0.009)
-    : 0;
-  const scale = settings.cinematicMode
-    ? 1 + (1 - settle) * 0.018
-    : 1;
-  const bleed = size * (scale - 1) / 2;
-  const alpha = settings.cinematicMode
-    ? lerp(reveal * 0.58, reveal, smoothstep(0.4, 0.94, reveal))
-    : reveal;
-
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.imageSmoothingEnabled = true;
-  if ("filter" in ctx) {
-    ctx.filter = blurRadius > 0.15 ? `blur(${blurRadius}px)` : "none";
-  }
-  ctx.drawImage(childCanvas, x - bleed, y - bleed, size * scale, size * scale);
-  if ("filter" in ctx) {
-    ctx.filter = "none";
-  }
-  ctx.restore();
-}
-
-function drawHardPortal(ctx, micro, childCanvas, patchX, patchY, patchSize, reveal, settings) {
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(patchX, patchY, patchSize, patchSize);
-  ctx.clip();
-  ctx.drawImage(micro, patchX, patchY, patchSize, patchSize);
-  drawRevealedChild(ctx, childCanvas, patchX, patchY, patchSize, reveal, settings);
-  ctx.restore();
-}
-
-function drawFeatheredPortal(ctx, micro, childCanvas, patchX, patchY, patchSize, reveal, settings, portalCoverage) {
-  const edgeStrength = settings.edgeBlend;
-  const growth = smoothstep(0.28, 0.92, portalCoverage);
-  const roundness = settings.shapeMorph * (1 - smoothstep(0.48, 0.98, portalCoverage));
-  const feather = patchSize * edgeStrength * lerp(0.1, 0.78, growth);
-
-  if (feather < 1) {
-    drawHardPortal(ctx, micro, childCanvas, patchX, patchY, patchSize, reveal, settings);
-    return;
-  }
-
-  const layerSourceSize = patchSize + feather * 2;
-  const layerSize = Math.max(8, Math.round(layerSourceSize));
-  const innerSize = Math.max(2, (patchSize / layerSourceSize) * layerSize);
-  const inset = (layerSize - innerSize) / 2;
-  const layer = makeCanvas(layerSize, layerSize);
-  const layerCtx = layer.getContext("2d");
-
-  layerCtx.imageSmoothingEnabled = true;
-  layerCtx.drawImage(micro, 0, 0, layerSize, layerSize);
-  drawRevealedChild(layerCtx, childCanvas, 0, 0, layerSize, reveal, settings);
-
-  layerCtx.globalCompositeOperation = "destination-in";
-  layerCtx.drawImage(getFeatherMask(layerSize, inset, roundness), 0, 0);
-  layerCtx.globalCompositeOperation = "source-over";
-
-  const exactLayer = makeCanvas(layerSize, layerSize);
-  const exactCtx = exactLayer.getContext("2d");
-  const centerFade = innerSize * lerp(0.1, 0.28, edgeStrength);
-
-  exactCtx.imageSmoothingEnabled = true;
-  exactCtx.drawImage(micro, inset, inset, innerSize, innerSize);
-  drawRevealedChild(exactCtx, childCanvas, inset, inset, innerSize, reveal, settings);
-  exactCtx.globalCompositeOperation = "destination-in";
-  exactCtx.drawImage(getCenterMask(layerSize, inset, innerSize, centerFade, roundness), 0, 0);
-  exactCtx.globalCompositeOperation = "source-over";
-  layerCtx.drawImage(exactLayer, 0, 0);
-
-  ctx.drawImage(
-    layer,
-    patchX - feather,
-    patchY - feather,
-    layerSourceSize,
-    layerSourceSize
-  );
-}
-
 function getTransition(from, to, settings) {
   const override = getPortalOverride(from.id, to.id);
   const key = transitionKey(from.id, to.id, settings, override);
   if (!state.transitions.has(key)) {
-    const portalSettings = resolvePortalSettings(from.canvas, to.canvas, settings, override);
-    const preparedChildCanvas = createMatchedChildCanvas(from.canvas, to.canvas, portalSettings);
-    state.transitions.set(key, {
-      canvas: buildMicroCanvas(from.canvas, preparedChildCanvas, portalSettings),
-      childCanvas: preparedChildCanvas,
-      settings: portalSettings
-    });
+    state.transitions.set(key, PhotoZoom.createTransition(from.canvas, to.canvas, settings, override));
   }
   return state.transitions.get(key);
 }
@@ -1616,44 +1026,7 @@ function getCurrentLoopSegment(progress = state.progress) {
 }
 
 function getTransitionGeometry(t, portalSettings, targetSize = previewCanvas.width) {
-  const sourceSize = SOURCE_SIZE;
-  const zoomProgress = portalSettings.cinematicMode
-    ? easeInOutSine(smoothstep(0.02, 0.98, t))
-    : easeInOutCubic(t);
-  const centerProgress = portalSettings.cinematicMode
-    ? easeInOutCubic(smoothstep(0.08, 0.94, t))
-    : zoomProgress;
-  const patchSize = sourceSize * portalSettings.patch;
-  const patchX = clamp(sourceSize * portalSettings.anchorX - patchSize / 2, 0, sourceSize - patchSize);
-  const patchY = clamp(sourceSize * portalSettings.anchorY - patchSize / 2, 0, sourceSize - patchSize);
-  const patchCenterX = patchX + patchSize / 2;
-  const patchCenterY = patchY + patchSize / 2;
-  const motionX = patchCenterX - sourceSize / 2;
-  const motionY = patchCenterY - sourceSize / 2;
-  const motionLength = Math.hypot(motionX, motionY);
-  const driftStrength = portalSettings.cinematicMode && motionLength > 1
-    ? sourceSize * 0.018 * Math.sin(centerProgress * Math.PI) * Math.min(1, motionLength / (sourceSize * 0.22))
-    : 0;
-  const driftX = motionLength > 1 ? (-motionY / motionLength) * driftStrength : 0;
-  const driftY = motionLength > 1 ? (motionX / motionLength) * driftStrength : 0;
-  const viewSize = sourceSize * Math.pow(portalSettings.patch, zoomProgress);
-  const viewCenterX = lerp(sourceSize / 2, patchCenterX, centerProgress) + driftX;
-  const viewCenterY = lerp(sourceSize / 2, patchCenterY, centerProgress) + driftY;
-  const viewX = viewCenterX - viewSize / 2;
-  const viewY = viewCenterY - viewSize / 2;
-  const scale = targetSize / viewSize;
-
-  return {
-    patchSize,
-    patchX,
-    patchY,
-    patchCenterX,
-    patchCenterY,
-    viewSize,
-    viewX,
-    viewY,
-    scale
-  };
+  return PhotoZoom.geometry(t, portalSettings, targetSize, SOURCE_SIZE);
 }
 
 function drawPortalPickMarker(ctx, geometry) {
@@ -1679,71 +1052,9 @@ function drawPortalPickMarker(ctx, geometry) {
 }
 
 function drawTransition(from, to, t, settings) {
-  const ctx = previewCtx;
-  const size = previewCanvas.width;
-  const transition = getTransition(from, to, settings);
-  const portalSettings = transition.settings;
-  const geometry = getTransitionGeometry(t, portalSettings, size);
-  const micro = transition.canvas;
-  const childCanvas = transition.childCanvas;
-  const portalCoverage = clamp(geometry.patchSize / geometry.viewSize, 0, 1);
-  const revealStart = lerp(0.58, 0.42, portalSettings.edgeBlend);
-  const revealEnd = lerp(0.96, 0.84, portalSettings.edgeBlend);
-  const reveal = portalSettings.cinematicMode
-    ? smoothstep(0.34, 0.86, t)
-    : smoothstep(revealStart, revealEnd, t);
-  const glow = (1 - portalSettings.edgeBlend * 0.75) * (1 - smoothstep(0.2, 0.72, t)) * (portalSettings.cinematicMode ? 0.6 : 1);
-
-  ctx.save();
-  ctx.fillStyle = "#050607";
-  ctx.fillRect(0, 0, size, size);
-  ctx.scale(geometry.scale, geometry.scale);
-  ctx.translate(-geometry.viewX, -geometry.viewY);
-
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(from.canvas, 0, 0, SOURCE_SIZE, SOURCE_SIZE);
-
-  drawFeatheredPortal(
-    ctx,
-    micro,
-    childCanvas,
-    geometry.patchX,
-    geometry.patchY,
-    geometry.patchSize,
-    reveal,
-    portalSettings,
-    portalCoverage
-  );
-
-  if (glow > 0.01) {
-    ctx.strokeStyle = `rgba(55, 192, 170, ${0.24 * glow})`;
-    ctx.lineWidth = Math.max(1, geometry.viewSize / size * 2);
-    ctx.strokeRect(geometry.patchX, geometry.patchY, geometry.patchSize, geometry.patchSize);
-  }
-
-  ctx.restore();
-
-  if (portalSettings.cinematicMode) {
-    const frameDissolve = smoothstep(0.82, 0.98, t) * 0.16;
-    if (frameDissolve > 0.001) {
-      ctx.save();
-      ctx.globalAlpha = frameDissolve;
-      ctx.imageSmoothingEnabled = true;
-      if ("filter" in ctx) {
-        const dissolveBlur = (1 - smoothstep(0.88, 1, t)) * Math.max(0.4, size * 0.0035);
-        ctx.filter = dissolveBlur > 0.12 ? `blur(${dissolveBlur}px)` : "none";
-      }
-      ctx.drawImage(childCanvas, 0, 0, size, size);
-      if ("filter" in ctx) {
-        ctx.filter = "none";
-      }
-      ctx.restore();
-    }
-  }
-
-  if (state.isPickingPortal && !state.isRecording) {
-    drawPortalPickMarker(ctx, geometry);
-  }
+  const segment = state.images.indexOf(from);
+  const geometry = PhotoZoom.render(previewCtx, state.images, segment, t, settings, getTransition);
+  if (state.isPickingPortal && !state.isRecording) drawPortalPickMarker(previewCtx, geometry);
 }
 
 function drawLoopFrame(progress) {
@@ -1951,46 +1262,60 @@ async function recordWebm() {
 
   state.isRecording = true;
   state.isPlaying = false;
+  state.isPickingPortal = false;
   updateStatus();
   webmButton.textContent = "Recording";
-
-  const settings = getSettings();
-  const chunks = [];
-  const stream = previewCanvas.captureStream(settings.fps);
-  const mimeType = getRecorderMimeType();
-  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-
-  recorder.ondataavailable = (event) => {
-    if (event.data.size > 0) chunks.push(event.data);
-  };
-
-  const finished = new Promise((resolve) => {
-    recorder.onstop = resolve;
-  });
-
-  recorder.start();
-  const totalFrames = getTransitionFrames(settings) * state.images.length;
-
-  for (let frame = 0; frame < totalFrames; frame++) {
-    state.progress = frame / totalFrames;
-    timelineInput.value = String(Math.round(state.progress * 1000));
+  let stream;
+  let recordingError;
+  try {
+    const settings = getSettings();
+    // Prepare every pair before capture so image analysis cannot stall a frame.
+    state.images.forEach((image, index) => {
+      getTransition(image, state.images[(index + 1) % state.images.length], settings);
+    });
+    state.progress = 0;
+    timelineInput.value = "0";
     drawCurrentFrame();
-    await new Promise((resolve) => setTimeout(resolve, 1000 / settings.fps));
+    const chunks = [];
+    stream = previewCanvas.captureStream(settings.fps);
+    const mimeType = getRecorderMimeType();
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
+    };
+    let captureError;
+    const finished = new Promise((resolve) => {
+      recorder.onstop = resolve;
+      recorder.onerror = (event) => { captureError = event.error || new Error("Video capture failed"); resolve(); };
+    });
+    recorder.start();
+    const totalFrames = getTransitionFrames(settings) * state.images.length;
+    const started = performance.now();
+    for (let frame = 0; frame < totalFrames; frame++) {
+      if (captureError) throw captureError;
+      state.progress = frame / totalFrames;
+      timelineInput.value = String(Math.round(state.progress * 1000));
+      drawCurrentFrame();
+      const nextFrameAt = started + (frame + 1) * 1000 / settings.fps;
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, nextFrameAt - performance.now())));
+    }
+    if (recorder.state !== "inactive") recorder.stop();
+    await finished;
+    if (captureError) throw captureError;
+    const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || "video/webm" });
+    if (!blob.size) throw new Error("No video frames were captured");
+    const fileName = `zoom-loop.${getVideoExtension(blob.type)}`;
+    await shareOrDownloadBlob(blob, fileName, "Zoom Loop video");
+  } catch (error) {
+    recordingError = error;
+  } finally {
+    stream?.getTracks().forEach((track) => track.stop());
+    state.isRecording = false;
+    webmButton.textContent = "Video";
+    renderImageList();
+    updateStatus();
+    if (recordingError) statusText.textContent = `Recording failed: ${recordingError.message}`;
   }
-
-  recorder.stop();
-  await finished;
-  stream.getTracks().forEach((track) => track.stop());
-
-  const blob = new Blob(chunks, {
-    type: recorder.mimeType || mimeType || "video/webm"
-  });
-  const fileName = `zoom-loop.${getVideoExtension(blob.type)}`;
-  await shareOrDownloadBlob(blob, fileName, "Zoom Loop video");
-
-  state.isRecording = false;
-  webmButton.textContent = "Video";
-  updateStatus();
 }
 
 function getRecorderMimeType() {

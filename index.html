@@ -10,10 +10,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Zoom Loop">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="manifest.webmanifest?v=6">
+    <link rel="manifest" href="manifest.webmanifest?v7">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
-    <link rel="stylesheet" href="styles.css?v=6">
+    <link rel="stylesheet" href="styles.css?v7">
   </head>
   <body>
     <main class="app-shell">
@@ -81,7 +81,7 @@
 
           <label class="field">
             <span>Frames</span>
-            <input id="framesInput" type="number" min="24" max="240" step="6" value="90">
+            <input id="framesInput" type="number" min="24" max="240" step="6" value="120">
           </label>
 
           <label class="field">
@@ -91,7 +91,7 @@
 
           <label class="field slider-field">
             <span>Zoom speed</span>
-            <input id="zoomRateInput" type="range" min="25" max="250" value="100">
+            <input id="zoomRateInput" type="range" min="25" max="250" value="82">
           </label>
         </section>
 
@@ -120,12 +120,12 @@
 
           <label class="field slider-field">
             <span>Patch size</span>
-            <input id="patchInput" type="range" min="8" max="34" value="17">
+            <input id="patchInput" type="range" min="8" max="34" value="12">
           </label>
 
           <label class="field toggle-field">
             <span>Auto place</span>
-            <input id="autoAnchorInput" type="checkbox">
+            <input id="autoAnchorInput" type="checkbox" checked>
           </label>
 
           <label class="field slider-field">
@@ -140,27 +140,27 @@
 
           <label class="field slider-field">
             <span>Color bind</span>
-            <input id="bindInput" type="range" min="0" max="100" value="72">
+            <input id="bindInput" type="range" min="0" max="100" value="100">
           </label>
 
           <label class="field slider-field">
             <span>Sample blend</span>
-            <input id="sampleBlendInput" type="range" min="0" max="100" value="55">
+            <input id="sampleBlendInput" type="range" min="0" max="100" value="78">
           </label>
 
           <label class="field slider-field">
             <span>Edge blend</span>
-            <input id="edgeBlendInput" type="range" min="0" max="100" value="68">
+            <input id="edgeBlendInput" type="range" min="0" max="100" value="86">
           </label>
 
           <label class="field slider-field">
-            <span>Shape morph</span>
+            <span>Organic edge</span>
             <input id="shapeMorphInput" type="range" min="0" max="100" value="70">
           </label>
 
           <label class="field slider-field">
             <span>Pixel grain</span>
-            <input id="grainInput" type="range" min="0" max="100" value="36">
+            <input id="grainInput" type="range" min="0" max="100" value="0">
           </label>
 
           <label class="field slider-field">
@@ -176,6 +176,7 @@
       </aside>
     </main>
 
-    <script src="app.js?v=6"></script>
+    <script src="zoom-renderer.js?v7"></script>
+    <script src="app.js?v7"></script>
   </body>
 </html>

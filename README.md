@@ -4,6 +4,10 @@ Zoom Loop is a browser app for making recursive photo zoom loops. You add a stac
 
 Everything runs in your browser. Your photos are not uploaded to a server.
 
+The effect is built from the photos you add. Each pair gets a texture-aware insertion point, a small embedded version that borrows the surrounding photo's material, and a feather outside the image boundary. As the camera moves closer, the next photo's detail and original color emerge in the same place. Nested photos are carried through the handoff, including the last-to-first transition, with continuous zoom speed.
+
+Automatic placement is on by default, with a small patch, strong color binding, and no added grain. The camera uses the central 80% of each normalized square photo so the blend boundary passes outside the screen before the handoff. Very different subjects can still produce a visible change of scene; the compositor blends existing pixels and does not invent matching objects or scenery. Use `Pick Portal` if an automatic placement lands on an important subject.
+
 ## Phone Install Link
 
 Open the app on your phone:
@@ -94,7 +98,7 @@ Loads a safer starting setup for smoother transitions. Use this when the sliders
 Applies `Smooth Defaults`, clears old picked portal points, and sorts the image stack when there are three or more photos. This is the quickest way to let the app choose a cleaner automated setup.
 
 `Auto Cinematic`
-Builds on `Auto Tune` and also turns on `Cinematic mode`, using softer reveal blur, per-pair color matching, and smoother camera motion for a more film-like transition.
+Builds on `Auto Tune` and also turns on `Cinematic mode`, keeping the embedded texture concealed longer and slowing the zoom.
 
 `Pick Portal`
 Lets you click the preview to choose the zoom point for the current photo-to-photo transition. Move the timeline to the transition you want, click `Pick Portal`, then click the spot in the preview where the next photo should hide.
@@ -106,31 +110,31 @@ Removes the clicked portal point for the current transition and goes back to `Au
 Softens extreme slider combinations. Leave this on for cleaner transitions, or turn it off when you want harsher pixel or symmetry effects.
 
 `Cinematic mode`
-Adds per-transition color matching, a blur-to-sharp reveal, and a gentler zoom path. This makes the transition feel less digital and more like a camera move.
+Keeps the parent texture and color longer before the child photo emerges. Both modes use continuous zoom motion and restore the original photo colors at the handoff.
 
 `Patch size`
 Changes how large the hidden portal is inside the current image.
 
 `Auto place`
-Turns on automatic portal placement. The app scans the current photo and chooses a safer inner area whose color, brightness, contrast, surrounding edge, and framing best match the next photo. This can still choose off-center zoom points, but it avoids edge-heavy picks that make the zoom feel out of frame.
+Scans the current photo for a region with similar color and spatial detail to the next photo. It compares small image patterns as well as averages and keeps the insertion inside the frame. Enabled by default.
 
 `Anchor X` and `Anchor Y`
 Move the portal left/right and up/down inside the current image when `Auto place` is off.
 
 `Color bind`
-Controls how strongly the hidden photo borrows color from the parent image. Higher values make the hidden photo blend more into the pixels around it.
+Controls how strongly the small embedded photo borrows the parent region's color and texture. The default of 100 hides most of the new photo's structure at a distance; its detail and original colors return as you zoom in.
 
 `Sample blend`
-Softens how the hidden image is sampled and fades the portal edge into the parent image. Raise this when the hidden image looks pasted on or too harsh.
+Changes the scale used to separate photo detail from lighting and color during texture blending.
 
 `Edge blend`
-Adds an extended feather around the portal. The feather gets wider as the portal grows on screen, which helps hide the square edge late in the zoom.
+Controls the feather outside the embedded photo. The extension softens into the surrounding pixels and moves out of view during the zoom, without turning into an opaque square.
 
-`Shape morph`
-Starts the portal feather as a more circular frame, then lets it become rectangular as it grows to fit the full image.
+`Organic edge`
+Varies the feather along the surrounding texture to reduce a regular geometric outline. It does not distort the photo itself.
 
 `Pixel grain`
-Makes the hidden portal more blocky and pixel-like before the zoom reveals it.
+Adds fine noise to the embedded texture. Leave this at zero for clean photographic blending.
 
 `Symmetry`
 Folds the hidden image into mirrored sectors, creating a more fractal or kaleidoscopic portal.
@@ -162,7 +166,7 @@ Video recording depends on your browser. If recording does not work, try Microso
 - Use `Smooth Defaults` when the transition starts looking warped.
 - Use `Pick Portal` on only the transitions that still need a better zoom point.
 - Put very different photos next to each other for a more surreal jump.
-- If the hidden portal is too obvious, increase `Color bind`, `Sample blend`, `Edge blend`, or `Pixel grain`.
+- If the hidden portal is too obvious, reduce `Patch size`, increase `Color bind` or `Edge blend`, and keep `Pixel grain` at zero.
 - If the center zoom is boring, turn on `Auto place` to let the app search for a better off-center match.
 - If the zoom feels too slow or too fast, adjust `Zoom speed` first.
 
@@ -175,6 +179,10 @@ If you only see one image, add at least one more photo. The loop needs two or mo
 If the exported video is too large, lower `Canvas`, `Frames`, or `FPS`.
 
 If the app feels slow, use fewer photos or lower the `Canvas` size.
+
+## Renderer checks
+
+With Node.js and Playwright available, run `node tests/renderer.spec.cjs`. Set `ZOOM_BROWSER` to a Chromium browser executable if Playwright's browser is not installed. Optional `ZOOM_TEST_PHOTOS` accepts a JSON array of local photo paths for visual checks. The suite tests uploads, extreme color/texture fixtures, portrait and panorama crops, camera continuity, 24 segment endpoint comparisons, deterministic scrubbing, portal picking, playback, and PNG export. Results and a transition contact sheet are written to the ignored `test-results/` directory.
 
 If the app does not show an install option, make sure you opened it from an HTTPS link instead of directly from a local file.
 
