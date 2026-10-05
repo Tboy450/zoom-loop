@@ -10,7 +10,7 @@ const PhotoZoom = (() => {
   const analysisCache = new WeakMap();
   const extensionCache = new WeakMap();
   const layers = [];
-  const detailLayers = [];
+  const detailCache = new WeakMap();
   let detailCutout;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const mix = (a, b, t) => a + (b - a) * t;
@@ -71,9 +71,20 @@ const PhotoZoom = (() => {
     return result;
   }
 
-  function drawPhotoDetail(ctx, source, inset, core, coverage, depth) {
-    if (coverage >= 1 / FRAME) {
-      ctx.drawImage(source, inset, inset, core, core);
+  function drawProjectedPhoto(ctx, source, x, y, core, offsetX, offsetY, outputSize) {
+    const left = Math.max(x, -offsetX), top = Math.max(y, -offsetY);
+    const right = Math.min(x + core, outputSize - offsetX), bottom = Math.min(y + core, outputSize - offsetY);
+    if (right <= left || bottom <= top) return;
+    ctx.drawImage(source, (left - x) / core * source.width, (top - y) / core * source.height,
+      (right - left) / core * source.width, (bottom - top) / core * source.height,
+      left, top, right - left, bottom - top);
+  }
+
+  function drawPhotoDetail(ctx, source, x, y, core, offsetX, offsetY, outputSize) {
+    const inset = core * 0.09;
+    if (x + offsetX + inset <= 0 && y + offsetY + inset <= 0 &&
+        x + offsetX + core - inset >= outputSize && y + offsetY + core - inset >= outputSize) {
+      drawProjectedPhoto(ctx, source, x, y, core, offsetX, offsetY, outputSize);
       return;
     }
     if (!detailCutout) {
@@ -88,17 +99,16 @@ const PhotoZoom = (() => {
       }
       maskCtx.putImageData(mask, 0, 0);
     }
-    if (!detailLayers[depth]) detailLayers[depth] = canvas(core);
-    const sharp = detailLayers[depth];
-    if (sharp.width !== core) sharp.width = sharp.height = core;
-    const detailCtx = sharp.getContext("2d");
-    detailCtx.clearRect(0, 0, core, core);
-    detailCtx.drawImage(source, 0, 0, core, core);
-    detailCtx.globalCompositeOperation = "destination-out";
-    detailCtx.drawImage(detailCutout, 0, 0, core, core);
-    detailCtx.globalCompositeOperation = "source-over";
-    detailCtx.globalAlpha = 1;
-    ctx.drawImage(sharp, inset, inset, core, core);
+    let sharp = detailCache.get(source);
+    if (!sharp) {
+      sharp = canvas(source.width);
+      const detailCtx = sharp.getContext("2d");
+      detailCtx.drawImage(source, 0, 0);
+      detailCtx.globalCompositeOperation = "destination-out";
+      detailCtx.drawImage(detailCutout, 0, 0, sharp.width, sharp.height);
+      detailCache.set(source, sharp);
+    }
+    drawProjectedPhoto(ctx, sharp, x, y, core, offsetX, offsetY, outputSize);
   }
 
   function sample(data, u, v, channel) {
@@ -355,7 +365,7 @@ const PhotoZoom = (() => {
         for (let c = 0; c < 3; c++) {
           const detail = childData.data[childPixel * 4 + c] - childLow[childPixel * 3 + c];
           const parentDetail = parentData.data[i + c] - parentLow[pixel * 3 + c];
-          const detailGain = clamp((Math.abs(parentDetail) + 1) / (Math.abs(detail) + 12), 0.035, 0.28);
+          const detailGain = clamp((Math.abs(parentDetail) + 1) / (Math.abs(detail) + 12), 0.01, 0.28);
           const camouflaged = parentData.data[i + c] + detail * detailGain;
           const noise = (((x * 13 + y * 17) % 11) / 10 - 0.5) * grain * 12;
           embedded.data[i + c] = mix(childData.data[childPixel * 4 + c], camouflaged, bind) + noise;
@@ -384,6 +394,7 @@ const PhotoZoom = (() => {
     // All masks live in photo coordinates and never depend on the playhead.
     const parentBands = [3, 14, 48].map(radius => lowPass(parent, radius));
     const childBands = [3, 14, 48].map(radius => lowPass(child, radius));
+    const contour = settings.shapeMorph > 0 ? findStitchContour(parent, child, parentBands[0], childBands[0]) : null;
     const stitch = canvas(TEXTURE_SIZE);
     const ctx = stitch.getContext("2d");
     const result = ctx.createImageData(TEXTURE_SIZE, TEXTURE_SIZE);
@@ -397,12 +408,16 @@ const PhotoZoom = (() => {
         const u = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO;
         const v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
         const d = Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5));
-        const variation = settings.shapeMorph * 0.025 * Math.sin(u * 17) * Math.sin(v * 19);
-        const distance = d + variation * smooth(0.4, 0.6, d);
-        const fine = 1 - smooth(0.44, 0.64, distance);
-        const medium = 1 - smooth(0.4, mix(0.65, 0.85, settings.sampleBlend), distance);
-        const broad = 1 - smooth(0.32, 0.94, distance);
-        const lighting = 1 - smooth(mix(0.45, 0.22, settings.bind), 1, distance);
+        const offset = contour ? (0.52 - contourRadius(contour.radii, u, v)) * settings.shapeMorph : 0;
+        const distance = d + offset * smooth(0.405, 0.5, d);
+        const fine = (1 - smooth(mix(0.48, 0.415, settings.edgeBlend), mix(0.55, 0.71, settings.edgeBlend), distance)) *
+          (1 - smooth(0.5, 0.59, d));
+        const medium = (1 - smooth(0.4, mix(0.62, 0.85, settings.sampleBlend * 0.6 + settings.edgeBlend * 0.4), distance)) *
+          (1 - smooth(0.52, 0.8, d));
+        // Extrapolated edge detail must not become long straight streaks in
+        // the halo. Use the parent's actual material beyond the photo edge.
+        const broad = 1 - smooth(0.32, mix(0.76, 1, settings.edgeBlend), d + offset * 0.35);
+        const lighting = 1 - smooth(mix(0.45, 0.22, settings.bind), 1, d + offset * 0.15);
         for (let c = 0; c < 3; c++) {
           const k = pixel * 3 + c;
           const a = pixel * 4 + c;
@@ -421,16 +436,81 @@ const PhotoZoom = (() => {
     }
     ctx.putImageData(result, 0, 0);
     maskCtx.putImageData(mask, 0, 0);
-    return { settings, rect: portal, stitch, cutout, extension: childExtension };
+    return { settings, rect: portal, stitch, cutout, extension: childExtension,
+      seam: contour ? { matchImprovement: contour.improvement, radii: contour.radii } : null };
+  }
+
+  function contourRadius(radii, u, v) {
+    const angle = ((Math.atan2(v - 0.5, u - 0.5) / (Math.PI * 2) + 1) % 1) * radii.length;
+    const i = Math.floor(angle);
+    return mix(radii[i], radii[(i + 1) % radii.length], angle - i);
+  }
+
+  function findStitchContour(parent, child, parentFine, childFine) {
+    // Follow places where existing detail matches, rather than imposing a
+    // repeating geometric border. Keep the central handoff crop untouched.
+    const angles = 192, choices = 25, low = 0.435, high = 0.625;
+    const costs = new Float32Array(angles * choices);
+    const radiusAt = index => mix(low, high, index / (choices - 1));
+    for (let a = 0; a < angles; a++) {
+      const angle = a / angles * Math.PI * 2;
+      const dx = Math.cos(angle), dy = Math.sin(angle);
+      const scale = Math.max(Math.abs(dx), Math.abs(dy));
+      for (let r = 0; r < choices; r++) {
+        const radius = radiusAt(r);
+        const u = 0.5 + dx / scale * radius, v = 0.5 + dy / scale * radius;
+        const x = clamp(Math.round((u + HALO) / SPAN * TEXTURE_SIZE), 0, TEXTURE_SIZE - 1);
+        const y = clamp(Math.round((v + HALO) / SPAN * TEXTURE_SIZE), 0, TEXTURE_SIZE - 1);
+        const pixel = y * TEXTURE_SIZE + x;
+        let detail = 0, color = 0;
+        for (let c = 0; c < 3; c++) {
+          const k = pixel * 3 + c, i = pixel * 4 + c;
+          detail += Math.abs((parent.data[i] - parentFine[k]) - (child.data[i] - childFine[k]));
+          color += Math.abs(parent.data[i] - child.data[i]);
+        }
+        costs[a * choices + r] = (detail * 0.85 + color * 0.15) / (3 * 255) + Math.abs(radius - 0.52) * 0.12;
+      }
+    }
+    const reference = Math.round((0.52 - low) / (high - low) * (choices - 1));
+    let bestCost = Infinity, bestPath;
+    // Closed-contour candidates avoid a discontinuity at the angular wrap.
+    for (const start of [Math.max(0, reference - 8), reference, Math.min(choices - 1, reference + 8)]) {
+      let previous = new Float32Array(choices).fill(Infinity);
+      previous[start] = costs[start];
+      const back = new Int16Array(angles * choices);
+      for (let a = 1; a < angles; a++) {
+        const next = new Float32Array(choices).fill(Infinity);
+        for (let r = 0; r < choices; r++) {
+          for (let before = Math.max(0, r - 1); before <= Math.min(choices - 1, r + 1); before++) {
+            const cost = previous[before] + costs[a * choices + r] + Math.abs(r - before) * 0.008;
+            if (cost < next[r]) { next[r] = cost; back[a * choices + r] = before; }
+          }
+        }
+        previous = next;
+      }
+      if (previous[start] < bestCost) {
+        bestCost = previous[start];
+        bestPath = new Int16Array(angles);
+        bestPath[angles - 1] = start;
+        for (let a = angles - 1; a > 0; a--) bestPath[a - 1] = back[a * choices + bestPath[a]];
+      }
+    }
+    // Use the centered contour if optimization costs more, including the
+    // continuity penalty.
+    let referenceCost = 0;
+    for (let a = 0; a < angles; a++) referenceCost += costs[a * choices + reference];
+    const radii = Float32Array.from(bestPath, radiusAt);
+    if (bestCost >= referenceCost) radii.fill(0.52);
+    return { radii, improvement: Math.max(0, referenceCost - bestCost) / angles };
   }
 
   function layerAt(depth, projectedSize, outputSize) {
-    // Bucket sizes avoid reallocating a canvas on every animation frame.
-    const size = Math.min(outputSize, Math.max(32, 2 ** Math.ceil(Math.log2(projectedSize))));
-    if (!layers[depth]) layers[depth] = canvas(size);
+    const size = Math.max(1, Math.ceil(projectedSize));
+    const capacity = Math.min(Math.ceil(outputSize), Math.max(32, 2 ** Math.ceil(Math.log2(size))));
+    if (!layers[depth]) layers[depth] = canvas(capacity);
     const layer = layers[depth];
-    if (layer.width !== size) layer.width = layer.height = size;
-    return layer;
+    if (layer.width < capacity || layer.width > outputSize) layer.width = layer.height = capacity;
+    return { layer, size };
   }
 
   function render(ctx, images, segment, t, settings, getTransition) {
@@ -439,28 +519,36 @@ const PhotoZoom = (() => {
     const first = pairAt(segment);
     const camera = geometry(t, first.settings, outputSize, images[segment].canvas.width);
 
-    function nested(index, incoming, projectedSize, depth) {
-      const layer = layerAt(depth, projectedSize * SPAN, outputSize * SPAN / FRAME);
+    function nested(index, incoming, projectedSize, depth, originX, originY, parentX = 0, parentY = 0) {
+      // Paint each tile in the final screen's pixel grid. Copying it at an
+      // integer origin and 1:1 scale avoids a second filtering pass, so detail
+      // stays stable as the camera moves, buffers grow, and photos hand off.
+      const x = Math.floor(originX), y = Math.floor(originY);
+      const globalX = parentX + x, globalY = parentY + y;
+      const shiftX = originX - x, shiftY = originY - y;
+      const span = projectedSize * SPAN;
+      const { layer, size } = layerAt(depth, span + Math.max(shiftX, shiftY), outputSize * SPAN / FRAME + 2);
       const local = layer.getContext("2d");
-      const size = layer.width;
-      const core = size / SPAN;
-      const inset = core * HALO;
+      const core = projectedSize;
+      const insetX = core * HALO + shiftX, insetY = core * HALO + shiftY;
       const coverage = projectedSize / outputSize;
       const stitched = settings.mode === "stitched";
       const reveal = stitched ? 1 : smooth(incoming.settings.cinematicMode ? 0.2 : 0.16, 0.9, coverage);
-      local.clearRect(0, 0, size, size);
+      local.clearRect(0, 0, layer.width, layer.height);
       local.imageSmoothingEnabled = true;
-      local.imageSmoothingQuality = "high";
+      // Bilinear filtering stays consistent when a photo crosses 1:1 scale.
+      // Browser "high" filtering switches kernels between shrinking/growing.
+      local.imageSmoothingQuality = "low";
       // Blend broad color and fine detail separately: an abrupt change from
       // a sharp photograph to a soft extension would itself reveal a box.
-      local.drawImage(incoming.extension, 0, 0, size, size);
+      local.drawImage(incoming.extension, shiftX, shiftY, span, span);
       if (stitched) {
-        local.drawImage(images[index % images.length].canvas, inset, inset, core, core);
-        local.drawImage(incoming.stitch, 0, 0, size, size);
+        drawProjectedPhoto(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize);
+        local.drawImage(incoming.stitch, shiftX, shiftY, span, span);
       } else {
-        drawPhotoDetail(local, images[index % images.length].canvas, inset, core, coverage, depth);
+        drawPhotoDetail(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize);
         local.globalAlpha = 1 - reveal;
-        local.drawImage(incoming.texture, 0, 0, size, size);
+        local.drawImage(incoming.texture, shiftX, shiftY, span, span);
       }
       local.globalAlpha = 1;
 
@@ -469,30 +557,31 @@ const PhotoZoom = (() => {
       // The fade also makes changing the depth limit invisible while zooming.
       if (nextSize > 0.5 && depth < 12) {
         const next = pairAt(index);
-        const child = nested(index + 1, next, nextSize, depth + 1);
+        const child = nested(index + 1, next, nextSize, depth + 1,
+          insetX + (next.rect.x - next.rect.size * HALO) * core, insetY + (next.rect.y - next.rect.size * HALO) * core, globalX, globalY);
         local.globalAlpha = smooth(0.5, 1.5, nextSize) * reveal;
-        local.drawImage(child, inset + (next.rect.x - next.rect.size * HALO) * core,
-          inset + (next.rect.y - next.rect.size * HALO) * core, next.rect.size * core * SPAN, next.rect.size * core * SPAN);
+        local.drawImage(child.layer, 0, 0, child.size, child.size, child.x, child.y, child.size, child.size);
         local.globalAlpha = 1;
       }
 
       // Feather only the extension. It leaves the viewport naturally; making
       // a rectangular mask opaque before it leaves would expose a hard box.
       local.globalCompositeOperation = "destination-out";
-      local.drawImage(incoming.cutout, 0, 0, size, size);
+      local.drawImage(incoming.cutout, shiftX, shiftY, span, span);
       local.globalCompositeOperation = "source-over";
-      return layer;
+      return { layer, size, x, y };
     }
 
     ctx.save();
     ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
+    ctx.imageSmoothingQuality = "low";
     const rootSize = images[segment].canvas.width * camera.scale;
-    ctx.drawImage(images[segment].canvas, -camera.viewX * camera.scale, -camera.viewY * camera.scale, rootSize, rootSize);
+    drawProjectedPhoto(ctx, images[segment].canvas, -camera.viewX * camera.scale, -camera.viewY * camera.scale, rootSize, 0, 0, outputSize);
     const projectedSize = camera.patchSize * camera.scale;
-    const child = nested(segment + 1, first, projectedSize, 0);
-    ctx.drawImage(child, (camera.patchX - camera.viewX) * camera.scale - projectedSize * HALO,
-      (camera.patchY - camera.viewY) * camera.scale - projectedSize * HALO, projectedSize * SPAN, projectedSize * SPAN);
+    const child = nested(segment + 1, first, projectedSize, 0,
+      (camera.patchX - camera.viewX) * camera.scale - projectedSize * HALO,
+      (camera.patchY - camera.viewY) * camera.scale - projectedSize * HALO);
+    ctx.drawImage(child.layer, 0, 0, child.size, child.size, child.x, child.y, child.size, child.size);
     ctx.restore();
     return camera;
   }

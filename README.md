@@ -71,11 +71,13 @@ You can also drag image files onto the `Add Images` box.
 
 Supported formats include JPG/JPEG, PNG, WebP, GIF, BMP, AVIF, HEIC, and HEIF. The app converts each loaded photo into an internal square canvas before rendering the loop. If a HEIC or HEIF photo does not open, load the app while online once so the converter can load, or save/export the photo as JPEG or PNG and add it again.
 
+Use `Frame` beside a photo to move its square crop, zoom in, or rotate it in 90° steps. The preview outline marks the central area visible at a loop handoff. `Apply frame` updates that photo and rebuilds its joins; `Cancel` or Escape discards the draft. You can recover the other edges of the uploaded photo by reopening Frame, rather than cropping an already cropped result. Picked portal positions stay in place.
+
 ## Save Your Work
 
 `Save Project` downloads a `.zoomloop` file containing the photo order, render settings, timeline position, and all picked portals. `Open Project` restores that file, including its photos, without uploading anything or requiring internet. A successful open replaces the current stack and leaves playback paused; save the current project first if you want to keep it.
 
-Projects contain the lossless 1024×1024 working square photos, rather than the full original files. Keep your originals separately for future cropping or editing. Projects support up to 200 photos and 200 MB. Invalid or unsupported files leave the current project intact. Refreshing the app still clears the working stack unless you save and reopen a project.
+Projects contain the lossless 1024×1024 working square photos. New uploads also include a framing copy with the original aspect ratio, capped at 2048 pixels on its longest side, so you can adjust the crop after reopening offline. These copies preserve the full composition but do not replace your full-resolution original files; keep your originals separately. Older project files still open, but can only reframe their saved square photos. Projects support up to 200 photos and 200 MB. Invalid or unsupported files leave the current project intact. Refreshing the app still clears the working stack unless you save and reopen a project.
 
 ## Make The Loop
 
@@ -88,7 +90,9 @@ Use the timeline slider along the bottom to scrub through the loop by hand.
 `Mode`
 Choose `Photo Blend` for a concealed image whose detail gradually emerges, or `Stitched World` for a fixed nested scene. Stitched World prepares each join locally before playback, blending fine detail across a narrow region and lighting/color across a wider region. Photos and joins stay fixed while the camera zooms; there is no time-dependent reveal. Only the supplied photos are used, and nothing is sent to a generation service.
 
-Stitched World works best when neighboring photos share textures, colors, or composition. Different subjects can still look like a collage; local blending cannot invent connecting scenery. Use `Auto Tune` to arrange photos and choose insertion points, then `Pick Portal` to refine individual joins. Cinematic reveal, grain, symmetry, and alignment are available in Photo Blend only.
+Stitched World works best when neighboring photos share textures, colors, or composition. Its organic seam follows a closed path through regions with lower detail and color mismatch. Fine detail returns to the parent's material outside the inserted photo, while lighting blends across a wider area, reducing long streaks from stretched edges. Different subjects can still look like a collage; local blending cannot invent connecting scenery. Use `Auto Tune` to arrange photos and choose insertion points, then `Pick Portal` to refine individual joins. Cinematic reveal, grain, symmetry, and alignment are available in Photo Blend only.
+
+Nested photos are drawn in the preview's pixel grid and copied at their actual projected size. Growing a render buffer no longer changes the photo's sampling scale. Consistent bilinear filtering avoids a separate sharpening jump when an image crosses its original resolution. These changes improve playback and exports without moving the prepared joins.
 
 `Canvas`
 Changes the export and preview resolution. Higher values look sharper but render slower.
@@ -176,7 +180,7 @@ Video recording depends on your browser. If recording does not work, try Microso
 ## Tips
 
 - Start with 3 to 6 photos.
-- Square images work best, but the app will crop rectangular photos into a square.
+- Square images work best. Use `Frame` to choose which part of a rectangular photo appears, especially when the subject is near an edge.
 - Put visually similar photos next to each other for smoother transitions.
 - Use `Auto Sort` first if you are not sure which order is best.
 - Use `Auto Tune` when you want the app to handle the order and smoother dial setup for you.
@@ -204,4 +208,6 @@ If phone photos do not upload, refresh the app first so the newest offline cache
 
 ## Renderer checks
 
-With Node.js and Playwright available, run `node tests/renderer.spec.cjs`. Set `ZOOM_BROWSER` to a Chromium browser executable if Playwright's browser is not installed. Optional `ZOOM_TEST_PHOTOS` accepts a JSON array of local photo paths for visual checks. The suite covers both modes, 48 segment endpoint comparisons plus all four output resolutions, fixed scene appearance, uploads, extreme color/texture fixtures, portrait and panorama crops, camera continuity, framing-aware placement, destination visibility, automatic controls, scrubbing, portal picking, playback, PNG/video export, cancellation, rendering and recorder failure cleanup, converter retries, numeric input limits, mobile layout, and offline loading. Project checks verify exact photo pixels, settings, order and picks after saving and reopening offline, plus rejection of malformed files without changing the current stack. Results and a Stitched World contact sheet are written to the ignored `test-results/` directory.
+With Node.js and Playwright available, run `node tests/renderer.spec.cjs`. Set `ZOOM_BROWSER` to a Chromium browser executable if Playwright's browser is not installed. Optional `ZOOM_TEST_PHOTOS` accepts a JSON array of local photo paths for visual checks. The suite covers both modes, 48 segment endpoint comparisons plus all four output resolutions and four comparisons after framing edits, fixed scene appearance, uploads, extreme color/texture fixtures, portrait and panorama crops, camera continuity, framing-aware placement, destination visibility, automatic controls, scrubbing, portal picking, playback, PNG/video export, cancellation, rendering and recorder failure cleanup, converter retries, numeric input limits, mobile layout, and offline loading. Project checks verify exact photo pixels, settings, order and picks after saving and reopening offline, plus rejection of malformed files without changing the current stack. Framing checks cover recovering original edges, quarter-turn rotations, zoom, cancellation, offline framing copies, legacy projects, decoder fallback, and mobile editor layout. Results and a Stitched World contact sheet are written to the ignored `test-results/` directory.
+
+For a varied real-photo run, set `ZOOM_TEST_PHOTOS` to a JSON array of at least four local photo paths and run `node tests/photo-scenes.spec.cjs`. It checks nine profiles in both modes, every segment handoff and its approach, render-buffer boundaries, fractional raster steps, and the feather leaving the viewport. `ZOOM_CHECK_BUCKETS=1` enforces the buffer-boundary checks; `ZOOM_SCENE_VIDEO=1` also records and decodes a full loop. The suite reads separate pixel snapshots so measurement does not change preview filtering. Results and contact sheets stay in `test-results/`; the test does not fetch or publish photos.

@@ -10,10 +10,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Zoom Loop">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="manifest.webmanifest?v10">
+    <link rel="manifest" href="manifest.webmanifest?v11">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
-    <link rel="stylesheet" href="styles.css?v10">
+    <link rel="stylesheet" href="styles.css?v11">
   </head>
   <body>
     <main class="app-shell">
@@ -194,7 +194,22 @@
       </aside>
     </main>
 
-    <script src="zoom-renderer.js?v10"></script>
-    <script src="app.js?v10"></script>
+    <dialog id="frameDialog" aria-labelledby="frameTitle" aria-describedby="frameHelp">
+      <h2 id="frameTitle">Frame photo</h2>
+      <p id="frameHelp" class="upload-help">Choose the part of this photo that appears in the loop.</p>
+      <canvas id="frameCanvas" width="600" height="600" aria-label="Photo framing preview"></canvas>
+      <label class="field"><span>Left / right</span><input id="frameXInput" type="range" min="0" max="100" value="50"></label>
+      <label class="field"><span>Up / down</span><input id="frameYInput" type="range" min="0" max="100" value="50"></label>
+      <label class="field"><span>Zoom <output id="frameZoomReadout">1×</output></span><input id="frameZoomInput" type="range" min="100" max="300" value="100"></label>
+      <div class="project-row">
+        <button id="frameRotateButton" type="button">Rotate 90°</button>
+        <button id="frameResetButton" type="button">Reset frame</button>
+        <button id="frameCancelButton" type="button">Cancel</button>
+        <button id="frameApplyButton" type="button">Apply frame</button>
+      </div>
+    </dialog>
+
+    <script src="zoom-renderer.js?v11"></script>
+    <script src="app.js?v11"></script>
   </body>
 </html>

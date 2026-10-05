@@ -57,7 +57,9 @@ module.exports = async function testProjects(browser, url, fixtures, output) {
       JSON.stringify({ ...saved, portals: [{ from: 99, to: 0, anchorX: 0.5, anchorY: 0.5 }] }),
       // Valid PNG header but broken compressed pixels: fail after staging another photo.
       JSON.stringify({ ...saved, images: [saved.images[0], { ...saved.images[1], data: saved.images[1].data.slice(0, 70) + "AAAA" }] }),
-      JSON.stringify({ ...saved, images: [saved.images[0], { ...saved.images[1], data: "data:image/png;base64,YmFk" }] })
+      JSON.stringify({ ...saved, images: [saved.images[0], { ...saved.images[1], data: "data:image/png;base64,YmFk" }] }),
+      JSON.stringify({ ...saved, images: [{ ...saved.images[0], framing: { x: 2, y: 0.5, zoom: 1, rotation: 0 } }] }),
+      JSON.stringify({ ...saved, images: [{ ...saved.images[0], source: "data:image/png;base64,YmFk" }] })
     ];
     for (const content of invalidProjects) {
       await page.locator("#projectFileInput").setInputFiles({ name: "broken.zoomloop", mimeType: "application/json", buffer: Buffer.from(content) });

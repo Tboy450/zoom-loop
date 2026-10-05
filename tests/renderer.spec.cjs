@@ -5,6 +5,7 @@ const http = require("node:http");
 const { chromium } = require("playwright");
 const testReliability = require("./reliability.cjs");
 const testProjects = require("./projects.cjs");
+const testFraming = require("./framing.cjs");
 
 const root = path.resolve(__dirname, "..");
 const output = path.join(root, "test-results");
@@ -350,6 +351,7 @@ const server = http.createServer((req, res) => {
     assert.equal(await page.locator("#patchInput").isDisabled(), false);
     const reliability = await testReliability(browser, `http://127.0.0.1:${server.address().port}/`, fixtures);
     const projects = await testProjects(browser, `http://127.0.0.1:${server.address().port}/`, fixtures, output);
+    const framing = await testFraming(browser, `http://127.0.0.1:${server.address().port}/`, output);
 
     if (process.env.ZOOM_TEST_PHOTOS) {
       await page.locator("#clearButton").click();
@@ -416,8 +418,8 @@ const server = http.createServer((req, res) => {
     await page.evaluate(() => navigator.serviceWorker.ready);
     await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
     const cacheReady = await page.evaluate(async () => {
-      const cache = await caches.open("zoom-loop-v10");
-      return Boolean(await cache.match("./zoom-renderer.js?v10"));
+      const cache = await caches.open("zoom-loop-v11");
+      return Boolean(await cache.match("./zoom-renderer.js?v11"));
     });
     assert.equal(cacheReady, true);
     await page.context().setOffline(true);
@@ -427,7 +429,7 @@ const server = http.createServer((req, res) => {
     await page.waitForFunction(() => state.images.length === 3);
     assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
     assert.deepEqual(errors, []);
-    const result = { placementChecks, geometryChecks, concealment, seams, resolutions, fixedScene, scrub, reliability, projects, offline: "passed", averageFrameMs: montage.averageMs, photos: photoCount, video: path.basename(videoPath) };
+    const result = { placementChecks, geometryChecks, concealment, seams, resolutions, fixedScene, scrub, reliability, projects, framing, offline: "passed", averageFrameMs: montage.averageMs, photos: photoCount, video: path.basename(videoPath) };
     fs.writeFileSync(path.join(output, "results.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ ...result, seams: `${seams.length} endpoint comparisons passed` }, null, 2));
   } finally {

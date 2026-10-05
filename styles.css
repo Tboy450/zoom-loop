@@ -421,6 +421,38 @@ input[type="range"] {
   font-size: 12px;
 }
 
+.image-actions .frame-button {
+  grid-column: 1 / -1;
+}
+
+#frameDialog {
+  width: min(92vw, 540px);
+  max-height: 94dvh;
+  overflow-y: auto;
+  padding: 20px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+#frameDialog::backdrop {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+#frameDialog .field {
+  margin-top: 12px;
+}
+
+#frameCanvas {
+  display: block;
+  width: min(100%, 44dvh);
+  height: auto;
+  aspect-ratio: 1;
+  margin: 12px auto;
+  background: #101112;
+}
+
 .field {
   display: grid;
   grid-template-columns: 110px minmax(0, 1fr);

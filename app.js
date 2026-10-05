@@ -25,6 +25,17 @@ const saveProjectButton = document.querySelector("#saveProjectButton");
 const openProjectButton = document.querySelector("#openProjectButton");
 const projectFileInput = document.querySelector("#projectFileInput");
 const projectHelp = document.querySelector("#projectHelp");
+const frameDialog = document.querySelector("#frameDialog");
+const frameCanvas = document.querySelector("#frameCanvas");
+const frameHelp = document.querySelector("#frameHelp");
+const frameXInput = document.querySelector("#frameXInput");
+const frameYInput = document.querySelector("#frameYInput");
+const frameZoomInput = document.querySelector("#frameZoomInput");
+const frameZoomReadout = document.querySelector("#frameZoomReadout");
+const frameRotateButton = document.querySelector("#frameRotateButton");
+const frameResetButton = document.querySelector("#frameResetButton");
+const frameCancelButton = document.querySelector("#frameCancelButton");
+const frameApplyButton = document.querySelector("#frameApplyButton");
 const timelineInput = document.querySelector("#timelineInput");
 const timeReadout = document.querySelector("#timeReadout");
 const autoCinematicButton = document.querySelector("#autoCinematicButton");
@@ -56,7 +67,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v10";
+const ASSET_VERSION = "v11";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -82,6 +93,7 @@ const state = {
   isRecording: false,
   isLoading: false,
   isPreparing: false,
+  isFraming: false,
   exportController: null,
   isPickingPortal: false,
   lastTime: 0,
@@ -90,6 +102,7 @@ const state = {
 
 let deferredInstallPrompt = null;
 let heicConverterPromise = null;
+let frameSession = null;
 
 const controls = [
   renderModeInput,
@@ -189,7 +202,7 @@ function readNumber(input, fallback, min, max) {
 }
 
 function isBusy() {
-  return state.isLoading || state.isRecording || state.isPreparing;
+  return state.isLoading || state.isRecording || state.isPreparing || state.isFraming;
 }
 
 function getTransitionFrames(settings) {
@@ -492,6 +505,7 @@ async function decodePhotoFile(file) {
   try {
     return {
       ...(await decodeNatively(file)),
+      sourceBlob: file,
       converted: false
     };
   } catch (nativeError) {
@@ -500,6 +514,7 @@ async function decodePhotoFile(file) {
     const convertedFile = await convertHeicFile(file);
     return {
       ...(await decodeNatively(convertedFile)),
+      sourceBlob: convertedFile,
       converted: true
     };
   }
@@ -539,7 +554,8 @@ async function loadFiles(files) {
           width: decoded.width,
           height: decoded.height,
           url: createThumbnailUrl(decoded.canvas),
-          canvas: decoded.canvas
+          canvas: decoded.canvas,
+          sourceBlob: decoded.sourceBlob
         });
         loadedCount++;
         if (decoded.converted) convertedCount++;
@@ -630,7 +646,14 @@ function renderImageList() {
     remove.textContent = "X";
     remove.addEventListener("click", () => removeImage(index));
 
-    actions.append(up, down, remove);
+    const frame = document.createElement("button");
+    frame.type = "button";
+    frame.className = "frame-button";
+    frame.textContent = "Frame";
+    frame.setAttribute("aria-label", `Frame ${image.name}`);
+    frame.addEventListener("click", () => openPhotoFrame(image.id));
+
+    actions.append(up, down, remove, frame);
     item.append(thumb, meta, actions);
     imageList.append(item);
   });
@@ -645,6 +668,156 @@ function moveImage(index, direction) {
   invalidateTransitions();
   renderImageList();
   drawCurrentFrame();
+}
+
+async function loadPhotoSource(blob) {
+  if (window.createImageBitmap) {
+    try {
+      let bitmap;
+      try { bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" }); }
+      catch { bitmap = await createImageBitmap(blob); }
+      return { image: bitmap, width: bitmap.width, height: bitmap.height, dispose: () => bitmap.close() };
+    } catch { /* Try the image-element decoder as on upload. */ }
+  }
+  const url = URL.createObjectURL(blob);
+  const image = new Image();
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error("Could not read the original photo"));
+      image.src = url;
+    });
+    return { image, width: image.naturalWidth, height: image.naturalHeight, dispose: () => URL.revokeObjectURL(url) };
+  } catch (error) { URL.revokeObjectURL(url); throw error; }
+}
+
+function drawPhotoFrame(ctx, source, width, height, framing) {
+  const turned = framing.rotation % 180 !== 0;
+  const sourceW = turned ? source.height : source.width;
+  const sourceH = turned ? source.width : source.height;
+  const side = Math.min(sourceW, sourceH) / framing.zoom;
+  const x = (sourceW - side) * framing.x;
+  const y = (sourceH - side) * framing.y;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.scale(width / side, height / side);
+  ctx.translate(-x, -y);
+  if (framing.rotation === 90) { ctx.translate(source.height, 0); ctx.rotate(Math.PI / 2); }
+  if (framing.rotation === 180) { ctx.translate(source.width, source.height); ctx.rotate(Math.PI); }
+  if (framing.rotation === 270) { ctx.translate(0, source.width); ctx.rotate(-Math.PI / 2); }
+  ctx.drawImage(source.image, 0, 0);
+  ctx.restore();
+}
+
+function getPhotoFraming() {
+  return { x: Number(frameXInput.value) / 100, y: Number(frameYInput.value) / 100,
+    zoom: Number(frameZoomInput.value) / 100, rotation: frameSession.rotation };
+}
+
+function drawPhotoFramingPreview() {
+  if (!frameSession) return;
+  const framing = getPhotoFraming();
+  const { source } = frameSession;
+  const turned = framing.rotation % 180 !== 0;
+  const width = turned ? source.height : source.width;
+  const height = turned ? source.width : source.height;
+  const side = Math.min(width, height) / framing.zoom;
+  frameXInput.disabled = width - side < 0.01;
+  frameYInput.disabled = height - side < 0.01;
+  frameZoomReadout.value = `${framing.zoom.toFixed(2).replace(/\.?0+$/, "")}×`;
+  const ctx = frameCanvas.getContext("2d", { alpha: false });
+  drawPhotoFrame(ctx, source, frameCanvas.width, frameCanvas.height, framing);
+  if (state.images.length > 1) {
+    const size = frameCanvas.width, inset = size * 0.1;
+    ctx.save();
+    ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
+    ctx.fillRect(0, 0, size, inset); ctx.fillRect(0, size - inset, size, inset);
+    ctx.fillRect(0, inset, inset, size - inset * 2); ctx.fillRect(size - inset, inset, inset, size - inset * 2);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+    ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+    ctx.strokeRect(inset, inset, size - inset * 2, size - inset * 2);
+    ctx.restore();
+  }
+}
+
+async function openPhotoFrame(imageId) {
+  if (isBusy()) return;
+  const photo = state.images.find(image => image.id === imageId);
+  if (!photo) return;
+  const previousPlaying = state.isPlaying;
+  let source;
+  state.isPreparing = true;
+  updateStatus();
+  statusText.textContent = "Preparing photo framing";
+  try {
+    if (!photo.sourceBlob) photo.sourceBlob = dataUrlToBlob(photo.canvas.toDataURL("image/png"));
+    source = await loadPhotoSource(photo.sourceBlob);
+    const squareOnly = source.width === source.height && photo.width !== photo.height;
+    const framing = photo.framing || { x: 0.5, y: 0.5, zoom: 1, rotation: 0 };
+    frameSession = { photo, source, previousPlaying, rotation: framing.rotation };
+    frameXInput.value = String(framing.x * 100);
+    frameYInput.value = String(framing.y * 100);
+    frameZoomInput.value = String(framing.zoom * 100);
+    document.querySelector("#frameTitle").textContent = `Frame ${photo.name}`;
+    frameHelp.textContent = squareOnly
+      ? "This older project has only the square photo. Add the original to recover its edges."
+      : "Choose the part of this photo that appears in the loop. Changes apply only when you press Apply frame.";
+    if (state.images.length > 1) frameHelp.textContent += " The outline marks the area visible at each loop handoff.";
+    state.isFraming = true;
+    drawPhotoFramingPreview();
+    frameDialog.showModal();
+  } catch (error) {
+    source?.dispose();
+    frameSession = null;
+    state.isFraming = false;
+    state.isPlaying = previousPlaying;
+    setUploadHelp(`Could not frame photo: ${error.message}`, "error");
+  } finally {
+    state.isPreparing = false;
+    state.lastTime = 0;
+    updateStatus();
+  }
+}
+
+function finishPhotoFraming() {
+  if (!frameSession) return;
+  const { previousPlaying, source } = frameSession;
+  frameSession = null;
+  source.dispose();
+  state.isFraming = false;
+  state.isPlaying = previousPlaying;
+  state.lastTime = 0;
+  updateStatus();
+}
+
+function closePhotoFraming() {
+  frameDialog.close();
+  finishPhotoFraming();
+}
+
+function applyPhotoFraming() {
+  if (!frameSession) return;
+  try {
+    const { photo, source } = frameSession;
+    const framing = getPhotoFraming();
+    const canvas = makeCanvas(SOURCE_SIZE, SOURCE_SIZE);
+    drawPhotoFrame(canvas.getContext("2d", { alpha: false }), source, SOURCE_SIZE, SOURCE_SIZE, framing);
+    const url = createThumbnailUrl(canvas);
+    if (photo.url.startsWith("blob:")) URL.revokeObjectURL(photo.url);
+    photo.canvas = canvas;
+    photo.url = url;
+    photo.framing = framing;
+    invalidateTransitions();
+    closePhotoFraming();
+    renderImageList();
+    updateStatus();
+    drawCurrentFrame();
+    setUploadHelp("Photo frame updated. Joins use the new framing.", "ok");
+  } catch (error) {
+    frameHelp.textContent = `Could not apply frame: ${error.message}`;
+    setUploadHelp(frameHelp.textContent, "error");
+  }
 }
 
 function removeImage(index) {
@@ -704,10 +877,11 @@ function updateStatus() {
   cancelExportButton.classList.toggle("is-hidden", !state.isRecording);
   cancelExportButton.disabled = Boolean(state.exportController?.signal.aborted);
   imageList.querySelectorAll("li").forEach((item, index) => {
-    const [up, down, remove] = item.querySelectorAll("button");
+    const [up, down, remove, frame] = item.querySelectorAll("button");
     up.disabled = busy || index === 0;
     down.disabled = busy || index === count - 1;
     remove.disabled = busy;
+    frame.disabled = busy;
   });
   syncRenderMode();
   syncAnchorMode();
@@ -772,7 +946,7 @@ function syncAnchorMode() {
 function syncRenderMode() {
   const stitched = renderModeInput.value === "stitched";
   renderModeHelp.textContent = stitched
-    ? "Photos are stitched into a fixed nested scene before playback. No fade-in reveal; only your photos are used."
+    ? "Fixed photo joins follow matching texture and lighting. Prepared locally before playback; only your photos are used."
     : "Hidden photo detail gradually emerges as you zoom.";
   for (const control of [cinematicModeInput, grainInput, symmetryInput, alignmentInput]) control.disabled = isBusy() || stitched;
 }
@@ -1315,11 +1489,16 @@ async function saveProject() {
     project.settings.framesInput = String(getSettings().frames);
     project.settings.fpsInput = String(getSettings().fps);
     if (state.images.length > 200) throw new Error("Projects support up to 200 photos");
+    let photoBytes = 0;
     for (const [index, image] of state.images.entries()) {
       projectHelp.textContent = `Saving photo ${index + 1} of ${state.images.length}…`;
       await new Promise(resolve => setTimeout(resolve, 0));
-      project.images.push({ name: image.name, width: image.width, height: image.height,
-        data: image.canvas.toDataURL("image/png") });
+      const savedPhoto = { name: image.name, width: image.width, height: image.height,
+        data: image.canvas.toDataURL("image/png"), framing: image.framing,
+        source: image.sourceBlob ? await encodeProjectPhotoSource(image.sourceBlob) : undefined };
+      photoBytes += savedPhoto.data.length + (savedPhoto.source?.length || 0);
+      if (photoBytes > MAX_PROJECT_BYTES) throw new Error("Project is too large; use fewer photos (200 MB maximum)");
+      project.images.push(savedPhoto);
     }
     const indices = new Map(state.images.map((image, index) => [image.id, index]));
     for (const [pair, point] of state.portalOverrides) {
@@ -1329,7 +1508,7 @@ async function saveProject() {
     const blob = new Blob([JSON.stringify(project)], { type: "application/json" });
     if (blob.size > MAX_PROJECT_BYTES) throw new Error("Project is too large; use fewer photos (200 MB maximum)");
     downloadBlob(blob, "zoom-loop.zoomloop");
-    message = "Project saved. It includes the working square photos, settings, and picked portals.";
+    message = "Project saved. Photos, framing, settings, and picked portals are included.";
   } catch (error) {
     message = `Could not save project: ${error.message}`;
   } finally {
@@ -1339,6 +1518,37 @@ async function saveProject() {
     updateStatus();
     projectHelp.textContent = message;
   }
+}
+
+async function encodeProjectPhotoSource(blob) {
+  const source = await loadPhotoSource(blob);
+  try {
+    const scale = Math.min(1, 2048 / Math.max(source.width, source.height));
+    const canvas = makeCanvas(Math.max(1, Math.round(source.width * scale)), Math.max(1, Math.round(source.height * scale)));
+    canvas.getContext("2d", { alpha: false }).drawImage(source.image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
+  } finally { source.dispose(); }
+}
+
+function validFraming(framing) {
+  return framing && Number.isFinite(framing.x) && framing.x >= 0 && framing.x <= 1 &&
+    Number.isFinite(framing.y) && framing.y >= 0 && framing.y <= 1 &&
+    Number.isFinite(framing.zoom) && framing.zoom >= 1 && framing.zoom <= 3 &&
+    [0, 90, 180, 270].includes(framing.rotation);
+}
+
+function readProjectPhoto(data, square = true) {
+  const blob = dataUrlToBlob(data);
+  return blob.slice(0, 24).arrayBuffer().then(buffer => {
+    const view = new DataView(buffer);
+    if (buffer.byteLength !== 24 || view.getUint32(0) !== 0x89504e47 ||
+        view.getUint32(4) !== 0x0d0a1a0a || view.getUint32(12) !== 0x49484452) throw new Error("Invalid saved photo");
+    const width = view.getUint32(16), height = view.getUint32(20);
+    if (square ? width !== SOURCE_SIZE || height !== SOURCE_SIZE : width < 1 || height < 1 || width > 2048 || height > 2048) {
+      throw new Error("Invalid saved photo dimensions");
+    }
+    return blob;
+  });
 }
 
 function validateProject(project) {
@@ -1365,6 +1575,9 @@ function validateProject(project) {
         image.width < 1 || image.height < 1 || image.width > 100000 || image.height > 100000 ||
         typeof image.data !== "string" || image.data.length > 8 * 1024 * 1024 ||
         !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(image.data)) invalid();
+    if (image.framing !== undefined && (!validFraming(image.framing) || image.source === undefined)) invalid();
+    if (image.source !== undefined && (typeof image.source !== "string" || image.source.length > 24 * 1024 * 1024 ||
+        !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(image.source))) invalid();
   }
   for (const point of project.portals) {
     if (!point || !Number.isInteger(point.from) || !Number.isInteger(point.to) ||
@@ -1387,18 +1600,16 @@ async function openProject(file) {
     const project = validateProject(JSON.parse(await file.text()));
     for (const [index, image] of project.images.entries()) {
       projectHelp.textContent = `Opening photo ${index + 1} of ${project.images.length}…`;
-      const blob = dataUrlToBlob(image.data);
-      const header = new Uint8Array(await blob.slice(0, 24).arrayBuffer());
-      const view = new DataView(header.buffer);
-      // Project photos are normalized PNGs. Reject oversized embedded images before decoding.
-      if (header.length !== 24 || view.getUint32(0) !== 0x89504e47 ||
-          view.getUint32(4) !== 0x0d0a1a0a || view.getUint32(12) !== 0x49484452 ||
-          view.getUint32(16) !== SOURCE_SIZE || view.getUint32(20) !== SOURCE_SIZE) {
-        throw new Error(`Invalid saved photo ${index + 1}`);
-      }
+      // Check normalized and framing-copy dimensions before allocating decoded pixels.
+      const blob = await readProjectPhoto(image.data);
       const decoded = await decodeNatively(blob);
+      const sourceBlob = image.source ? await readProjectPhoto(image.source, false) : undefined;
+      if (sourceBlob) {
+        const verified = await loadPhotoSource(sourceBlob);
+        verified.dispose();
+      }
       loaded.push({ id: createId(), name: image.name, width: image.width, height: image.height,
-        canvas: decoded.canvas, url: createThumbnailUrl(decoded.canvas) });
+        canvas: decoded.canvas, url: createThumbnailUrl(decoded.canvas), sourceBlob, framing: image.framing });
     }
     const portals = new Map(project.portals.map(point => [getPairKey(loaded[point.from].id, loaded[point.to].id),
       { anchorX: point.anchorX, anchorY: point.anchorY }]));
@@ -1685,6 +1896,21 @@ projectFileInput.addEventListener("change", (event) => {
   event.target.value = "";
   openProject(file);
 });
+for (const input of [frameXInput, frameYInput, frameZoomInput]) input.addEventListener("input", drawPhotoFramingPreview);
+frameRotateButton.addEventListener("click", () => {
+  if (!frameSession) return;
+  frameSession.rotation = (frameSession.rotation + 90) % 360;
+  drawPhotoFramingPreview();
+});
+frameResetButton.addEventListener("click", () => {
+  if (!frameSession) return;
+  frameSession.rotation = 0;
+  frameXInput.value = "50"; frameYInput.value = "50"; frameZoomInput.value = "100";
+  drawPhotoFramingPreview();
+});
+frameCancelButton.addEventListener("click", closePhotoFraming);
+frameApplyButton.addEventListener("click", applyPhotoFraming);
+frameDialog.addEventListener("close", () => { if (!frameDialog.open) finishPhotoFraming(); });
 autoCinematicButton.addEventListener("click", applyAutoCinematic);
 autoTuneButton.addEventListener("click", autoTuneLoop);
 smoothDefaultsButton.addEventListener("click", applySmoothDefaults);
