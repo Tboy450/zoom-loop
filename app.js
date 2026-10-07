@@ -16,10 +16,12 @@ const shareButton = document.querySelector("#shareButton");
 const pngButton = document.querySelector("#pngButton");
 const webmButton = document.querySelector("#webmButton");
 const cancelExportButton = document.querySelector("#cancelExportButton");
+const saveExportButton = document.querySelector("#saveExportButton");
 const renderModeInput = document.querySelector("#renderModeInput");
 const renderModeHelp = document.querySelector("#renderModeHelp");
 const sampleButton = document.querySelector("#sampleButton");
 const autoSortButton = document.querySelector("#autoSortButton");
+const matchPriorityInput = document.querySelector("#matchPriorityInput");
 const clearButton = document.querySelector("#clearButton");
 const saveProjectButton = document.querySelector("#saveProjectButton");
 const openProjectButton = document.querySelector("#openProjectButton");
@@ -45,11 +47,21 @@ const portalPickButton = document.querySelector("#portalPickButton");
 const portalClearButton = document.querySelector("#portalClearButton");
 const portalHelp = document.querySelector("#portalHelp");
 const placementStatus = document.querySelector("#placementStatus");
+const pickerPanel = document.querySelector("#pickerPanel");
+const pickerTitle = document.querySelector("#pickerTitle");
+const pickerMatch = document.querySelector("#pickerMatch");
+const pickerHint = document.querySelector("#pickerHint");
+const pickerStrip = document.querySelector("#pickerStrip");
+const pickerPrevButton = document.querySelector("#pickerPrevButton");
+const pickerAutoButton = document.querySelector("#pickerAutoButton");
+const pickerPlayButton = document.querySelector("#pickerPlayButton");
+const pickerNextButton = document.querySelector("#pickerNextButton");
+const pickerDoneButton = document.querySelector("#pickerDoneButton");
+const timingSummary = document.querySelector("#timingSummary");
 
 const sizeInput = document.querySelector("#sizeInput");
-const framesInput = document.querySelector("#framesInput");
+const durationInput = document.querySelector("#durationInput");
 const fpsInput = document.querySelector("#fpsInput");
-const zoomRateInput = document.querySelector("#zoomRateInput");
 const smoothGuardInput = document.querySelector("#smoothGuardInput");
 const cinematicModeInput = document.querySelector("#cinematicModeInput");
 const patchInput = document.querySelector("#patchInput");
@@ -67,7 +79,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v11";
+const ASSET_VERSION = "v12";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -96,6 +108,9 @@ const state = {
   isFraming: false,
   exportController: null,
   isPickingPortal: false,
+  pickSegment: 0,
+  pickDrag: null,
+  pickPreview: null,
   lastTime: 0,
   dragDepth: 0
 };
@@ -105,11 +120,11 @@ let heicConverterPromise = null;
 let frameSession = null;
 
 const controls = [
+  matchPriorityInput,
   renderModeInput,
   sizeInput,
-  framesInput,
+  durationInput,
   fpsInput,
-  zoomRateInput,
   smoothGuardInput,
   cinematicModeInput,
   patchInput,
@@ -174,16 +189,20 @@ function setCanvasSize(size) {
 }
 
 function getSettings() {
+  const fps = readNumber(fpsInput, 30, 12, 60);
+  const seconds = readSeconds();
   return {
     mode: renderModeInput.value === "stitched" ? "stitched" : "blend",
     size: [720, 1080, 1440, 2160].includes(Number(sizeInput.value)) ? Number(sizeInput.value) : 1080,
-    frames: readNumber(framesInput, 120, 24, 240),
-    fps: readNumber(fpsInput, 30, 12, 60),
-    zoomRate: Number(zoomRateInput.value) / 100,
+    // Seconds per photo and frame rate set the frames in each transition.
+    seconds,
+    fps,
+    frames: Math.max(8, Math.round(seconds * fps)),
     smoothGuard: smoothGuardInput.checked,
     cinematicMode: cinematicModeInput.checked,
     patch: Number(patchInput.value) / 100,
     autoAnchor: autoAnchorInput.checked,
+    matchPriority: matchPriorityInput.value,
     anchorX: Number(anchorXInput.value) / 100,
     anchorY: Number(anchorYInput.value) / 100,
     bind: Number(bindInput.value) / 100,
@@ -196,6 +215,11 @@ function getSettings() {
   };
 }
 
+function readSeconds() {
+  const value = Number(durationInput.value);
+  return Number.isFinite(value) && durationInput.value.trim() !== "" ? clamp(Math.round(value * 2) / 2, 1, 15) : 5;
+}
+
 function readNumber(input, fallback, min, max) {
   const value = input.value.trim() === "" ? NaN : Number(input.value);
   return Number.isFinite(value) ? clamp(Math.round(value), min, max) : fallback;
@@ -206,7 +230,58 @@ function isBusy() {
 }
 
 function getTransitionFrames(settings) {
-  return Math.max(8, Math.round(settings.frames / Math.max(0.25, settings.zoomRate)));
+  return settings.frames;
+}
+
+function getLoopSeconds(settings = getSettings()) {
+  return state.images.length >= 2 ? settings.frames * state.images.length / settings.fps : 0;
+}
+
+function formatClock(seconds) {
+  const minutes = Math.floor(Math.max(0, seconds) / 60);
+  return `${minutes}:${(Math.max(0, seconds) - minutes * 60).toFixed(1).padStart(4, "0")}`;
+}
+
+// Each slider shows its value next to its name.
+const readouts = [
+  [durationInput, "#durationReadout", value => `${Number(value).toFixed(1)} s`],
+  [patchInput, "#patchReadout", value => `${value}%`],
+  [anchorXInput, "#anchorXReadout", value => `${value}%`],
+  [anchorYInput, "#anchorYReadout", value => `${value}%`],
+  [bindInput, "#bindReadout", value => `${value}%`],
+  [sampleBlendInput, "#sampleBlendReadout", value => `${value}%`],
+  [edgeBlendInput, "#edgeBlendReadout", value => `${value}%`],
+  [shapeMorphInput, "#shapeMorphReadout", value => `${value}%`],
+  [grainInput, "#grainReadout", value => `${value}%`],
+  [symmetryInput, "#symmetryReadout", value => Number(value) === 1 ? "Off" : `${value} folds`],
+  [alignmentInput, "#alignmentReadout", value => `${value}°`]
+].map(([input, selector, format]) => [input, document.querySelector(selector), format]);
+
+function syncControlReadouts() {
+  for (const [input, output, format] of readouts) {
+    const text = format(input.value);
+    if (output.textContent !== text) output.textContent = text;
+  }
+  const settings = getSettings();
+  const count = state.images.length;
+  timingSummary.textContent = count >= 2
+    ? `Video length ${formatClock(getLoopSeconds(settings))} · ${count} photos × ${settings.seconds.toFixed(1)} s · ${settings.frames * count} frames at ${settings.fps} fps`
+    : `Each photo takes ${settings.seconds.toFixed(1)} s. Add photos to see the video length.`;
+}
+
+// Older project files stored frames per transition and a zoom-speed percent
+// instead of seconds per photo.
+function migrateLegacyTiming(settings) {
+  if (settings.durationInput === undefined) {
+    const fps = Number(settings.fpsInput) || 30;
+    const frames = clamp(Number(settings.framesInput) || 120, 24, 240);
+    const rate = clamp(Number(settings.zoomRateInput) || 82, 25, 250) / 100;
+    settings.durationInput = String(clamp(Math.round(frames / rate / fps * 2) / 2, 1, 15));
+  }
+  if (typeof settings.fpsInput === "string" && ![...fpsInput.options].some(option => option.value === settings.fpsInput)) {
+    const fps = Number(settings.fpsInput);
+    settings.fpsInput = Number.isFinite(fps) ? String([24, 30, 60].reduce((best, value) => Math.abs(value - fps) < Math.abs(best - fps) ? value : best)) : "30";
+  }
 }
 
 function transitionKey(fromId, toId, settings, override) {
@@ -218,6 +293,7 @@ function transitionKey(fromId, toId, settings, override) {
     fromId,
     toId,
     settings.mode,
+    settings.matchPriority,
     settings.smoothGuard ? "guard" : "raw",
     settings.cinematicMode ? "cinema" : "plain",
     settings.patch.toFixed(3),
@@ -246,17 +322,23 @@ function getPortalOverride(fromId, toId) {
   return state.portalOverrides.get(getPairKey(fromId, toId));
 }
 
+function invalidatePair(fromId, toId) {
+  for (const key of state.transitions.keys()) {
+    if (key.startsWith(`${fromId}:${toId}:`)) state.transitions.delete(key);
+  }
+}
+
 function setPortalOverride(fromId, toId, anchorX, anchorY) {
   state.portalOverrides.set(getPairKey(fromId, toId), {
     anchorX: clamp(anchorX, 0.08, 0.92),
     anchorY: clamp(anchorY, 0.08, 0.92)
   });
-  invalidateTransitions();
+  invalidatePair(fromId, toId);
 }
 
 function clearPortalOverride(fromId, toId) {
   state.portalOverrides.delete(getPairKey(fromId, toId));
-  invalidateTransitions();
+  invalidatePair(fromId, toId);
 }
 
 function purgePortalOverrides() {
@@ -887,21 +969,24 @@ function updateStatus() {
   syncAnchorMode();
   syncPortalPickingUi();
   syncPlaybackUi();
+  syncControlReadouts();
 }
 
 function syncPortalPickingUi() {
   const canPick = state.images.length >= 2 && !isBusy();
   if (!canPick) state.isPickingPortal = false;
+  if (!state.isPickingPortal) { state.pickDrag = null; state.pickPreview = null; }
+  if (state.pickSegment >= state.images.length) state.pickSegment = 0;
   portalPickButton.classList.toggle("is-active", state.isPickingPortal);
-  portalPickButton.textContent = state.isPickingPortal ? "Click Preview" : "Pick Portal";
-  canvasWrap.classList.toggle("is-picking", state.isPickingPortal);
+  portalPickButton.textContent = state.isPickingPortal ? "Done Placing" : "Place Manually";
+  canvasWrap.classList.toggle("is-picking", state.isPickingPortal && !state.pickPreview);
+  refreshPickerPanel();
 }
 
 function syncPlaybackUi() {
   const label = state.isPlaying ? "Pause" : "Play";
   playButton.textContent = label;
-  stagePlayButton.classList.toggle("is-playing", state.isPlaying);
-  stagePlayButton.setAttribute("aria-label", `${label} loop`);
+  stagePlayButton.hidden = state.isPlaying || state.isRecording || state.isPickingPortal;
 }
 
 async function prepareTransitions(settings, signal) {
@@ -953,9 +1038,8 @@ function syncRenderMode() {
 
 function applySmoothDefaults() {
   if (isBusy()) return;
-  framesInput.value = "120";
+  durationInput.value = "5";
   fpsInput.value = "30";
-  zoomRateInput.value = "82";
   smoothGuardInput.checked = true;
   patchInput.value = "8";
   autoAnchorInput.checked = true;
@@ -977,18 +1061,15 @@ function applySmoothDefaults() {
   drawCurrentFrame();
 }
 
-function autoTuneLoop() {
-  if (isBusy()) return;
+async function autoTuneLoop() {
+  if (isBusy()) return false;
 
   state.portalOverrides.clear();
   cinematicModeInput.checked = false;
   applySmoothDefaults();
 
   if (state.images.length >= 3) {
-    state.images = sortImagesBySimilarity(state.images);
-    state.progress = 0;
-    timelineInput.value = "0";
-    renderImageList();
+    if (!await autoSortImages()) return false;
   }
 
   invalidateTransitions();
@@ -1001,15 +1082,15 @@ function autoTuneLoop() {
   );
   setPortalHelp("Auto Tune applied: smooth defaults, safer auto placement, and no old picked portals.", "ok");
   drawCurrentFrame();
+  return true;
 }
 
-function applyAutoCinematic() {
+async function applyAutoCinematic() {
   if (isBusy() || renderModeInput.value === "stitched") return;
 
-  autoTuneLoop();
+  if (!await autoTuneLoop()) return;
   cinematicModeInput.checked = true;
-  framesInput.value = "138";
-  zoomRateInput.value = "76";
+  durationInput.value = "6";
   bindInput.value = "100";
   sampleBlendInput.value = "74";
   edgeBlendInput.value = "82";
@@ -1039,22 +1120,44 @@ function setProgressToSegmentStart(segment) {
   timelineInput.value = String(Math.round(state.progress * 1000));
 }
 
+// While placing, the preview shows the start of the chosen join with the next
+// photo drawn where it will appear, so a change is visible without playback.
+function getPickCurrent() {
+  const count = state.images.length;
+  if (count < 2) return null;
+  const segment = clamp(state.pickSegment, 0, count - 1);
+  return { segment, localT: 0, from: state.images[segment], to: state.images[(segment + 1) % count] };
+}
+
 function togglePortalPickMode() {
   if (state.images.length < 2 || isBusy()) return;
-
+  if (state.isPickingPortal) {
+    finishPortalPicking();
+    return;
+  }
   const current = getCurrentLoopSegment();
   if (!current) return;
-
   state.isPlaying = false;
-  state.isPickingPortal = !state.isPickingPortal;
+  state.isPickingPortal = true;
+  startPickingSegment(current.segment);
+}
 
-  if (state.isPickingPortal) {
-    setProgressToSegmentStart(current.segment);
-    setPortalHelp(`Click the preview to set the portal for transition ${currentTransitionLabel(current)}.`);
-  } else {
-    setPortalHelp("");
-  }
+function startPickingSegment(segment) {
+  const count = state.images.length;
+  state.pickSegment = ((segment % count) + count) % count;
+  state.pickDrag = null;
+  state.pickPreview = null;
+  setProgressToSegmentStart(state.pickSegment);
+  const current = getPickCurrent();
+  setPortalHelp(`Drag the box on the preview to choose where photo ${(current.segment + 1) % count + 1} appears inside photo ${current.segment + 1}.`);
+  syncPortalPickingUi();
+  syncPlaybackUi();
+  drawCurrentFrame();
+}
 
+function finishPortalPicking() {
+  state.isPickingPortal = false;
+  setPortalHelp(state.portalOverrides.size ? "Placement saved. Press Play to watch the whole loop." : "");
   syncPortalPickingUi();
   syncPlaybackUi();
   drawCurrentFrame();
@@ -1062,32 +1165,214 @@ function togglePortalPickMode() {
 
 function clearCurrentPortalPick() {
   if (isBusy()) return;
-  const current = getCurrentLoopSegment();
+  const current = state.isPickingPortal ? getPickCurrent() : getCurrentLoopSegment();
   if (!current) return;
 
   clearPortalOverride(current.from.id, current.to.id);
-  setPortalHelp(`Cleared picked portal for transition ${currentTransitionLabel(current)}.`, "ok");
+  setPortalHelp(`Cleared picked portal for transition ${currentTransitionLabel(current)}. Using the auto spot.`, "ok");
   drawCurrentFrame();
+  refreshPickerPanel();
 }
 
-function handlePortalCanvasClick(event) {
-  if (!state.isPickingPortal || state.images.length < 2) return;
+function pickSpotLimits(settings) {
+  // Same limits as the renderer and saved picks, so the box never jumps.
+  const low = Math.max(0.08, settings.patch / 2 + 0.025);
+  return [low, 1 - low];
+}
 
-  const current = getCurrentLoopSegment();
-  if (!current) return;
-
-  const settings = getSettings();
-  const transition = getTransition(current.from, current.to, settings);
-  const geometry = getTransitionGeometry(current.localT, transition.settings, previewCanvas.width);
+function pickPointFromEvent(event, settings) {
+  const geometry = getTransitionGeometry(0, settings, previewCanvas.width);
   const rect = previewCanvas.getBoundingClientRect();
   const canvasX = (event.clientX - rect.left) * (previewCanvas.width / rect.width);
   const canvasY = (event.clientY - rect.top) * (previewCanvas.height / rect.height);
-  const sourceX = clamp(geometry.viewX + canvasX / geometry.scale, 0, SOURCE_SIZE);
-  const sourceY = clamp(geometry.viewY + canvasY / geometry.scale, 0, SOURCE_SIZE);
+  const [low, high] = pickSpotLimits(settings);
+  return {
+    anchorX: clamp((geometry.viewX + canvasX / geometry.scale) / SOURCE_SIZE, low, high),
+    anchorY: clamp((geometry.viewY + canvasY / geometry.scale) / SOURCE_SIZE, low, high)
+  };
+}
 
-  setPortalOverride(current.from.id, current.to.id, sourceX / SOURCE_SIZE, sourceY / SOURCE_SIZE);
-  state.isPickingPortal = false;
-  setPortalHelp(`Portal set for transition ${currentTransitionLabel(current)}.`, "ok");
+function handlePickPointerDown(event) {
+  if (!state.isPickingPortal || state.pickPreview || isBusy() || event.button > 0) return;
+  event.preventDefault();
+  previewCanvas.setPointerCapture?.(event.pointerId);
+  state.pickDrag = pickPointFromEvent(event, getSettings());
+  drawCurrentFrame();
+}
+
+let pickMoveFrame = 0;
+function handlePickPointerMove(event) {
+  if (!state.pickDrag) return;
+  state.pickDrag = pickPointFromEvent(event, getSettings());
+  if (!pickMoveFrame) pickMoveFrame = requestAnimationFrame(() => { pickMoveFrame = 0; if (state.pickDrag) drawCurrentFrame(); });
+}
+
+function handlePickPointerUp(event) {
+  if (!state.pickDrag) return;
+  const point = pickPointFromEvent(event, getSettings());
+  state.pickDrag = null;
+  const current = getPickCurrent();
+  if (!current) return;
+  setPortalOverride(current.from.id, current.to.id, point.anchorX, point.anchorY);
+  setPortalHelp(`Portal set for transition ${currentTransitionLabel(current)}. The strip under the preview shows the new zoom.`, "ok");
+  drawCurrentFrame();
+  refreshPickerPanel();
+}
+
+function cancelPickDrag() {
+  if (!state.pickDrag) return;
+  state.pickDrag = null;
+  drawCurrentFrame();
+}
+
+const pickFieldCache = new Map();
+function getPickField(current, settings) {
+  const key = `${current.from.id}:${current.to.id}:${settings.patch}:${settings.matchPriority}`;
+  if (!pickFieldCache.has(key)) {
+    if (pickFieldCache.size > 24) pickFieldCache.clear();
+    const field = PhotoZoom.matchField(current.from.canvas, current.to.canvas, settings);
+    const values = field.map(point => point.match).sort((a, b) => a - b);
+    const best = values[0], typical = values[Math.floor(values.length / 2)];
+    // Only spots clearly better than typical earn a dot.
+    pickFieldCache.set(key, field.map(point => ({ ...point,
+      quality: clamp((typical - point.match) / Math.max(1e-6, typical - best), 0, 1) })));
+  }
+  return pickFieldCache.get(key);
+}
+
+function getPickSpot(current, settings) {
+  if (state.pickDrag) return { ...state.pickDrag, mode: "dragging" };
+  const override = getPortalOverride(current.from.id, current.to.id);
+  const match = PhotoZoom.matchPair(current.from.canvas, current.to.canvas, settings, override);
+  return { anchorX: match.anchorX, anchorY: match.anchorY, mode: override ? "picked" : settings.autoAnchor ? "auto" : "manual" };
+}
+
+function drawPickBox(ctx, image, anchorX, anchorY, settings, geometry, style) {
+  const box = settings.patch * SOURCE_SIZE * geometry.scale;
+  const x = (anchorX * SOURCE_SIZE - geometry.viewX) * geometry.scale - box / 2;
+  const y = (anchorY * SOURCE_SIZE - geometry.viewY) * geometry.scale - box / 2;
+  const line = Math.max(2, previewCanvas.width * 0.003);
+  ctx.save();
+  if (image) {
+    ctx.shadowColor = "rgba(0, 0, 0, 0.6)";
+    ctx.shadowBlur = line * 6;
+    ctx.drawImage(image, x, y, box, box);
+    ctx.shadowBlur = 0;
+  }
+  ctx.lineWidth = line;
+  ctx.strokeStyle = style.color;
+  ctx.setLineDash(style.dashed ? [line * 3, line * 2] : []);
+  ctx.strokeRect(x - line / 2, y - line / 2, box + line, box + line);
+  if (style.label) {
+    const font = Math.max(12, previewCanvas.width * 0.022);
+    ctx.font = `700 ${font}px system-ui, sans-serif`;
+    const width = ctx.measureText(style.label).width + font;
+    const labelY = y - font * 1.7 > 0 ? y - font * 1.6 : y + box + font * 0.3;
+    ctx.fillStyle = "rgba(16, 17, 18, 0.82)";
+    ctx.fillRect(x + box / 2 - width / 2, labelY, width, font * 1.35);
+    ctx.fillStyle = style.color;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(style.label, x + box / 2, labelY + font * 0.7);
+  }
+  ctx.restore();
+}
+
+function drawPickView(current, settings) {
+  const ctx = previewCtx;
+  const size = previewCanvas.width;
+  const geometry = getTransitionGeometry(0, settings, size);
+  ctx.drawImage(current.from.canvas, geometry.viewX, geometry.viewY, geometry.viewSize, geometry.viewSize, 0, 0, size, size);
+  // Dots mark spots where the next photo's colors and texture blend well.
+  ctx.save();
+  for (const point of getPickField(current, settings)) {
+    if (point.quality < 0.45) continue;
+    const x = (point.anchorX * SOURCE_SIZE - geometry.viewX) * geometry.scale;
+    const y = (point.anchorY * SOURCE_SIZE - geometry.viewY) * geometry.scale;
+    ctx.globalAlpha = 0.25 + 0.65 * (point.quality - 0.45) / 0.55;
+    ctx.fillStyle = "#37c0aa";
+    ctx.beginPath();
+    ctx.arc(x, y, size * (0.004 + 0.006 * point.quality), 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+  const spot = getPickSpot(current, settings);
+  const number = (current.segment + 1) % state.images.length + 1;
+  if (spot.mode !== "auto" && settings.autoAnchor) {
+    const auto = PhotoZoom.matchPair(current.from.canvas, current.to.canvas, settings, undefined);
+    drawPickBox(ctx, null, auto.anchorX, auto.anchorY, settings, geometry, { color: "rgba(245, 242, 236, 0.7)", dashed: true });
+  }
+  drawPickBox(ctx, current.to.canvas, spot.anchorX, spot.anchorY, settings, geometry, {
+    color: spot.mode === "auto" ? "#f5f2ec" : "#37c0aa", dashed: spot.mode === "auto",
+    label: spot.mode === "auto" ? `Photo ${number} · auto spot` : `Photo ${number}`
+  });
+}
+
+function describePickMatch(current, settings) {
+  const override = getPortalOverride(current.from.id, current.to.id);
+  if (!override && settings.autoAnchor) return { text: "Auto spot: best match found", tone: "good" };
+  const auto = PhotoZoom.matchPair(current.from.canvas, current.to.canvas, { ...settings, autoAnchor: true }, undefined);
+  const chosen = PhotoZoom.matchPair(current.from.canvas, current.to.canvas, settings, override);
+  const ratio = chosen.match / Math.max(1e-6, auto.match);
+  if (ratio <= 1.08) return { text: "Blends as well as the auto spot", tone: "good" };
+  if (ratio <= 1.3) return { text: "Blends a little less than auto", tone: "ok" };
+  if (ratio <= 1.7) return { text: "Weaker blend: edges may show", tone: "warn" };
+  return { text: "Poor blend: edges will show", tone: "warn" };
+}
+
+let pickerStripJob = 0;
+function refreshPickerPanel() {
+  const current = state.isPickingPortal ? getPickCurrent() : null;
+  pickerPanel.classList.toggle("is-hidden", !current);
+  if (!current) return;
+  const settings = getSettings();
+  const count = state.images.length;
+  const from = current.segment + 1, to = (current.segment + 1) % count + 1;
+  const override = getPortalOverride(current.from.id, current.to.id);
+  pickerTitle.textContent = `Join ${from} of ${count}: photo ${to} inside photo ${from}`;
+  pickerHint.textContent = state.pickPreview ? "Playing this zoom…" : override
+    ? "Your spot (solid box). Drag again to move it. The dashed box is the auto spot."
+    : "Drag anywhere on the preview to place the photo. Green dots mark spots that blend well.";
+  const match = describePickMatch(current, settings);
+  pickerMatch.textContent = match.text;
+  pickerMatch.dataset.tone = match.tone;
+  pickerAutoButton.disabled = !override || isBusy();
+  pickerPlayButton.textContent = state.pickPreview ? "Stop" : "Play this zoom";
+  for (const button of [pickerPrevButton, pickerNextButton]) button.disabled = isBusy() || Boolean(state.pickPreview);
+  const job = ++pickerStripJob;
+  pickerStrip.classList.add("is-updating");
+  // Preparing a join takes a moment; let the box and text update first.
+  setTimeout(() => {
+    if (job !== pickerStripJob || !state.isPickingPortal) return;
+    try { renderPickerStrip(getPickCurrent(), getSettings()); } catch (error) { pickerHint.textContent = `Preview failed: ${error.message}`; }
+    pickerStrip.classList.remove("is-updating");
+  }, 120);
+}
+
+const PICKER_TIMES = [0.45, 0.7, 0.85, 0.95];
+function renderPickerStrip(current, settings) {
+  if (!current) return;
+  if (pickerStrip.children.length !== PICKER_TIMES.length) {
+    pickerStrip.replaceChildren(...PICKER_TIMES.map(() => {
+      const figure = document.createElement("figure");
+      const canvas = makeCanvas(200, 200);
+      const caption = document.createElement("figcaption");
+      figure.append(canvas, caption);
+      return figure;
+    }));
+  }
+  PICKER_TIMES.forEach((t, index) => {
+    const figure = pickerStrip.children[index];
+    const canvas = figure.querySelector("canvas");
+    PhotoZoom.render(canvas.getContext("2d"), state.images, current.segment, t, { ...settings, size: canvas.width }, getTransition);
+    figure.querySelector("figcaption").textContent = `${(t * settings.seconds).toFixed(1)} s`;
+  });
+}
+
+function togglePickPreview() {
+  if (!state.isPickingPortal || isBusy()) return;
+  state.pickPreview = state.pickPreview ? null : { start: 0 };
+  state.pickDrag = null;
   syncPortalPickingUi();
   drawCurrentFrame();
 }
@@ -1187,10 +1472,7 @@ function getCanvasSignatureCached(canvas) {
 }
 
 function getImageSignature(image) {
-  if (!image.signature) {
-    image.signature = getCanvasSignatureCached(image.canvas);
-  }
-  return image.signature;
+  return getCanvasSignatureCached(image.canvas);
 }
 
 function scoreImagePair(firstImage, secondImage) {
@@ -1206,69 +1488,155 @@ function scoreImagePair(firstImage, secondImage) {
   return colorDistance * 0.52 + lumaDistance * 0.22 + contrastDistance * 0.18 + saturationDistance * 0.08;
 }
 
-function sortImagesBySimilarity(images) {
-  if (images.length < 3) return [...images];
+function cycleCost(order, costs) {
+  return order.reduce((sum, from, i) => sum + costs[from][order[(i + 1) % order.length]], 0);
+}
 
-  const remaining = [...images];
-  let bestPair = [0, 1];
-  let bestScore = Infinity;
-
-  for (let i = 0; i < remaining.length; i++) {
-    for (let j = i + 1; j < remaining.length; j++) {
-      const score = scoreImagePair(remaining[i], remaining[j]);
-      if (score < bestScore) {
-        bestScore = score;
-        bestPair = [i, j];
-      }
-    }
-  }
-
-  const order = [remaining[bestPair[0]], remaining[bestPair[1]]];
-  remaining.splice(bestPair[1], 1);
-  remaining.splice(bestPair[0], 1);
-
-  while (remaining.length) {
-    let bestImageIndex = 0;
-    let bestInsertAfter = 0;
-    let bestCost = Infinity;
-
-    for (let imageIndex = 0; imageIndex < remaining.length; imageIndex++) {
-      const image = remaining[imageIndex];
-      for (let orderIndex = 0; orderIndex < order.length; orderIndex++) {
-        const previous = order[orderIndex];
-        const next = order[(orderIndex + 1) % order.length];
-        const cost =
-          scoreImagePair(previous, image) +
-          scoreImagePair(image, next) -
-          scoreImagePair(previous, next);
-
-        if (cost < bestCost) {
-          bestCost = cost;
-          bestImageIndex = imageIndex;
-          bestInsertAfter = orderIndex;
+function optimizePhotoCycle(costs) {
+  const count = costs.length, original = Array.from({ length: count }, (_, i) => i);
+  if (count < 3) return original;
+  let order;
+  if (count <= 12) {
+    // Exact directed cycle for ordinary photo stacks, including the closing
+    // join. Photo zero fixes only the start of playback, not the route.
+    const states = 1 << count;
+    const best = new Float64Array(states * count).fill(Infinity);
+    const previous = new Int16Array(states * count).fill(-1);
+    best[count] = 0;
+    for (let mask = 1; mask < states; mask += 2) {
+      for (let last = 0; last < count; last++) {
+        const value = best[mask * count + last];
+        if (!Number.isFinite(value)) continue;
+        for (let next = 1; next < count; next++) {
+          if (mask & (1 << next)) continue;
+          const index = (mask | (1 << next)) * count + next;
+          const cost = value + costs[last][next];
+          if (cost < best[index]) { best[index] = cost; previous[index] = last; }
         }
       }
     }
-
-    const [image] = remaining.splice(bestImageIndex, 1);
-    order.splice(bestInsertAfter + 1, 0, image);
+    let last = 1;
+    for (let i = 2; i < count; i++) {
+      if (best[(states - 1) * count + i] + costs[i][0] < best[(states - 1) * count + last] + costs[last][0]) last = i;
+    }
+    order = [];
+    let mask = states - 1;
+    while (last >= 0) {
+      order.push(last);
+      const before = previous[mask * count + last];
+      mask ^= 1 << last;
+      last = before;
+    }
+    order.reverse();
+  } else {
+    let second = 1;
+    for (let i = 2; i < count; i++) if (costs[0][i] + costs[i][0] < costs[0][second] + costs[second][0]) second = i;
+    order = [0, second];
+    const remaining = original.filter(i => !order.includes(i));
+    while (remaining.length) {
+      let chosen = 0, after = 0, improvement = Infinity;
+      for (let i = 0; i < remaining.length; i++) {
+        const image = remaining[i];
+        for (let j = 0; j < order.length; j++) {
+          const a = order[j], b = order[(j + 1) % order.length];
+          const delta = costs[a][image] + costs[image][b] - costs[a][b];
+          if (delta < improvement) { improvement = delta; chosen = i; after = j; }
+        }
+      }
+      order.splice(after + 1, 0, remaining.splice(chosen, 1)[0]);
+    }
+    if (cycleCost(original, costs) < cycleCost(order, costs)) order = [...original];
+    // Relocation keeps every directed edge cost correct; reversing a segment
+    // as if the costs were symmetric would give misleading improvements.
+    for (let pass = 0; pass < Math.min(count * 2, 80); pass++) {
+      let bestDelta = -1e-10, move;
+      for (let from = 1; from < count; from++) {
+        const image = order[from], a = order[from - 1], b = order[(from + 1) % count];
+        const reduced = order.filter((_, i) => i !== from);
+        const removal = costs[a][b] - costs[a][image] - costs[image][b];
+        for (let after = 0; after < reduced.length; after++) {
+          const left = reduced[after], right = reduced[(after + 1) % reduced.length];
+          const delta = removal + costs[left][image] + costs[image][right] - costs[left][right];
+          if (delta < bestDelta) { bestDelta = delta; move = { from, after }; }
+        }
+      }
+      if (!move) break;
+      const image = order.splice(move.from, 1)[0];
+      order.splice(move.after + 1, 0, image);
+    }
   }
-
-  return order;
+  return cycleCost(order, costs) < cycleCost(original, costs) - 1e-10 ? order : original;
 }
 
-function autoSortImages() {
-  if (state.images.length < 3 || isBusy()) return;
+async function sortImagesBySimilarity(images, settings = getSettings()) {
+  if (images.length < 3) return [...images];
+  const count = images.length;
+  const costs = images.map(() => new Float64Array(count).fill(Infinity));
+  const measured = images.map(() => new Set());
+  const measure = (i, j) => {
+    const match = PhotoZoom.matchPair(images[i].canvas, images[j].canvas, settings,
+      getPortalOverride(images[i].id, images[j].id), count > 24);
+    costs[i][j] = match.score + 2 * match.score * match.score;
+    measured[i].add(j);
+  };
+  for (let i = 0; i < count; i++) {
+    statusText.textContent = `Matching photo ${i + 1} of ${count}`;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const candidates = [];
+    for (let j = 0; j < count; j++) {
+      if (i === j) continue;
+      const broad = scoreImagePair(images[i], images[j]);
+      costs[i][j] = 1 + broad;
+      candidates.push({ j, broad });
+    }
+    candidates.sort((a, b) => a.broad - b.broad);
+    const shortlist = new Set(candidates.slice(0, count > 24 ? 12 : count).map(x => x.j));
+    shortlist.add((i + 1) % count);
+    shortlist.add((i + count - 1) % count);
+    for (const j of shortlist) measure(i, j);
+  }
+  let order = optimizePhotoCycle(costs);
+  // A large stack can select a join outside its shortlist. Measure that join
+  // before choosing the final cycle, rather than trusting the broad estimate.
+  for (let pass = 0; pass < 3; pass++) {
+    let refined = false;
+    for (let k = 0; k < count; k++) {
+      const i = order[k], j = order[(k + 1) % count];
+      if (!measured[i].has(j)) { measure(i, j); refined = true; }
+    }
+    if (!refined) break;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    order = optimizePhotoCycle(costs);
+  }
+  return order.map(i => images[i]);
+}
+
+async function autoSortImages() {
+  if (state.images.length < 3 || isBusy()) return false;
+  const previousPlaying = state.isPlaying;
   state.isPickingPortal = false;
-  state.images = sortImagesBySimilarity(state.images);
+  state.isPreparing = true;
+  updateStatus();
+  try {
+    state.images = await sortImagesBySimilarity(state.images);
+  } catch (error) {
+    state.isPreparing = false;
+    state.isPlaying = previousPlaying;
+    state.lastTime = 0;
+    updateStatus();
+    setUploadHelp(`Could not sort photos: ${error.message}`, "error");
+    return false;
+  }
+  state.isPreparing = false;
   state.progress = 0;
   timelineInput.value = "0";
   invalidateTransitions();
   renderImageList();
   updateStatus();
-  setUploadHelp(`Auto sorted ${state.images.length} images by visual similarity.`, "ok");
-  setPortalHelp("Transitions now follow the closest color and contrast matches.", "ok");
+  setUploadHelp(`Auto sorted ${state.images.length} images by their embedded joins.`, "ok");
+  setPortalHelp("The order matches lighting, color, and structure around each insertion, including the last-to-first join.", "ok");
   drawCurrentFrame();
+  return true;
 }
 
 function getTransition(from, to, settings) {
@@ -1300,32 +1668,9 @@ function getTransitionGeometry(t, portalSettings, targetSize = previewCanvas.wid
   return PhotoZoom.geometry(t, portalSettings, targetSize, SOURCE_SIZE);
 }
 
-function drawPortalPickMarker(ctx, geometry) {
-  const x = (geometry.patchCenterX - geometry.viewX) * geometry.scale;
-  const y = (geometry.patchCenterY - geometry.viewY) * geometry.scale;
-  const radius = Math.max(11, previewCanvas.width * 0.018);
-
-  ctx.save();
-  ctx.lineWidth = Math.max(2, previewCanvas.width * 0.003);
-  ctx.strokeStyle = "rgba(55, 192, 170, 0.95)";
-  ctx.fillStyle = "rgba(55, 192, 170, 0.14)";
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, TAU);
-  ctx.fill();
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(x - radius * 1.6, y);
-  ctx.lineTo(x + radius * 1.6, y);
-  ctx.moveTo(x, y - radius * 1.6);
-  ctx.lineTo(x, y + radius * 1.6);
-  ctx.stroke();
-  ctx.restore();
-}
-
 function drawTransition(from, to, t, settings) {
   const segment = state.images.indexOf(from);
-  const geometry = PhotoZoom.render(previewCtx, state.images, segment, t, settings, getTransition);
-  if (state.isPickingPortal && !state.isRecording) drawPortalPickMarker(previewCtx, geometry);
+  PhotoZoom.render(previewCtx, state.images, segment, t, settings, getTransition);
 }
 
 function updatePlacementStatus(current, settings) {
@@ -1346,8 +1691,13 @@ function updatePlacementStatus(current, settings) {
 function drawLoopFrame(progress) {
   const settings = getSettings();
   setCanvasSize(settings.size);
-  const current = getCurrentLoopSegment(progress);
-  updatePlacementStatus(current, settings);
+  const picking = state.isPickingPortal && !state.isRecording && state.images.length >= 2;
+  const current = picking ? getPickCurrent() : getCurrentLoopSegment(progress);
+  if (!state.pickDrag) updatePlacementStatus(current, settings);
+  if (picking && !state.pickPreview) {
+    drawPickView(current, settings);
+    return;
+  }
 
   if (state.images.length === 0) {
     drawEmpty();
@@ -1366,8 +1716,8 @@ function drawLoopFrame(progress) {
 
 function drawCurrentFrame() {
   drawLoopFrame(state.progress);
-  const percent = Math.round(state.progress * 100);
-  timeReadout.textContent = `${percent}%`;
+  const loop = getLoopSeconds();
+  timeReadout.textContent = `${formatClock(state.progress * loop)} / ${formatClock(loop)}`;
 }
 
 function tick(timestamp) {
@@ -1375,7 +1725,26 @@ function tick(timestamp) {
   const delta = Math.min(100, timestamp - state.lastTime);
   state.lastTime = timestamp;
 
-  if (state.isPlaying && !state.isRecording && state.images.length > 1) {
+  if (state.pickPreview && state.isPickingPortal && !state.isRecording) {
+    // Play just the join being placed, then return to the placement view.
+    const settings = getSettings();
+    if (!state.pickPreview.start) state.pickPreview.start = timestamp;
+    const t = (timestamp - state.pickPreview.start) / (settings.seconds * 1000);
+    const current = getPickCurrent();
+    try {
+      if (t >= 1.2 || !current) {
+        state.pickPreview = null;
+        syncPortalPickingUi();
+        drawCurrentFrame();
+      } else {
+        drawTransition(current.from, current.to, Math.min(1, t), settings);
+      }
+    } catch (error) {
+      state.pickPreview = null;
+      syncPortalPickingUi();
+      setPortalHelp(`Preview failed: ${error.message}`, "error");
+    }
+  } else if (state.isPlaying && !state.isRecording && state.images.length > 1) {
     const settings = getSettings();
     const loopMs = (getTransitionFrames(settings) * state.images.length / settings.fps) * 1000;
     state.progress = (state.progress + delta / loopMs) % 1;
@@ -1486,7 +1855,6 @@ async function saveProject() {
         control.type === "checkbox" ? control.checked : control.value])),
       images: [], portals: []
     };
-    project.settings.framesInput = String(getSettings().frames);
     project.settings.fpsInput = String(getSettings().fps);
     if (state.images.length > 200) throw new Error("Projects support up to 200 photos");
     let photoBytes = 0;
@@ -1558,7 +1926,10 @@ function validateProject(project) {
   if (!Array.isArray(project.images) || !project.images.length || project.images.length > 200 ||
       !Number.isFinite(project.progress) || project.progress < 0 || project.progress > 1 ||
       !project.settings || !Array.isArray(project.portals) || project.portals.length > project.images.length ** 2) invalid();
+  migrateLegacyTiming(project.settings);
   for (const control of controls) {
+    // Older project files predate the matching-priority selector.
+    if (control === matchPriorityInput && project.settings[control.id] === undefined) project.settings[control.id] = "balanced";
     const value = project.settings[control.id];
     if (control.type === "checkbox") {
       if (typeof value !== "boolean") invalid();
@@ -1668,65 +2039,135 @@ function downloadBlob(blob, fileName) {
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
-async function shareBlob(blob, fileName, title) {
-  if (!navigator.share || !window.File) return "unsupported";
+let pendingExport = null;
 
-  const file = new File([blob], fileName, {
-    type: blob.type || "application/octet-stream"
-  });
-  const payload = {
-    files: [file],
-    text: "Made with Zoom Loop",
-    title
-  };
+function isAppleMobile() {
+  return /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
 
-  if (navigator.canShare && !navigator.canShare({ files: [file] })) {
-    return "unsupported";
-  }
+function isAndroid() {
+  return /Android/i.test(navigator.userAgent);
+}
 
+function isPhoneOrTablet() {
+  return isAppleMobile() || isAndroid();
+}
+
+// Where a finished file goes:
+// - iPhone and iPad: only the share sheet's Save Video / Save Image reaches
+//   Photos, and only from a tap.
+// - Android and computers: a download. Android's Gallery and Google Photos
+//   list the Download folder, while its share sheet has no plain save option.
+function savesThroughShareSheet() {
+  return isAppleMobile() && Boolean(navigator.share && window.File);
+}
+
+function exportFile(blob, fileName) {
+  // iOS hides "Save Video" for a type such as video/mp4;codecs=avc1.
+  return new File([blob], fileName, { type: (blob.type || "application/octet-stream").split(";")[0] });
+}
+
+function canShareFile(file) {
+  return Boolean(navigator.share && window.File && (!navigator.canShare || navigator.canShare({ files: [file] })));
+}
+
+async function shareFile(file) {
+  if (!canShareFile(file)) return "unsupported";
   try {
-    await navigator.share(payload);
+    // Files only: adding a caption or title removes Save Image and Save
+    // Video from the iPhone share sheet.
+    await navigator.share({ files: [file] });
     return "shared";
   } catch (error) {
-    return error.name === "AbortError" ? "cancelled" : "unsupported";
+    if (error.name === "AbortError") return "cancelled";
+    return error.name === "NotAllowedError" ? "blocked" : "unsupported";
   }
 }
 
-async function shareOrDownloadBlob(blob, fileName, title) {
-  const result = await shareBlob(blob, fileName, title);
-
-  if (result === "shared") {
-    statusText.textContent = "Shared";
-    return;
-  }
-
-  if (result === "cancelled") {
-    statusText.textContent = "Share canceled";
-    return;
-  }
-
+function downloadExport(blob, fileName) {
   downloadBlob(blob, fileName);
+  if (isAppleMobile()) return `Saved ${fileName} to Files › Downloads. Open it there and tap Share › Save to add it to Photos.`;
+  if (isAndroid()) return `Saved ${fileName} to Downloads. Find it in your Gallery's Download album.`;
+  return `Downloaded ${fileName}.`;
+}
+
+function clearPendingExport() {
+  pendingExport = null;
+  saveExportButton.classList.add("is-hidden");
+}
+
+function showPendingExport(file, kind, mode) {
+  pendingExport = { file, kind, mode };
+  saveExportButton.textContent = `${mode === "save" ? "Save" : "Share"} ${kind === "video" ? "video" : "image"}`;
+  saveExportButton.classList.remove("is-hidden");
+}
+
+// Delivers a finished export. Returns the status message to show.
+function offerExport(blob, fileName, kind) {
+  const file = exportFile(blob, fileName);
+  if (savesThroughShareSheet() && canShareFile(file)) {
+    // The tap that started a long export has expired; this needs a new one.
+    showPendingExport(file, kind, "save");
+    return `${kind === "video" ? "Video" : "Image"} ready. Tap ${saveExportButton.textContent} to add it to Photos.`;
+  }
+  const message = downloadExport(blob, fileName);
+  if (isAndroid() && canShareFile(file)) {
+    showPendingExport(file, kind, "share");
+    return `${message} Tap ${saveExportButton.textContent} to send it to an app.`;
+  }
+  clearPendingExport();
+  return message;
+}
+
+async function savePendingExport() {
+  if (!pendingExport) return;
+  const { file, mode } = pendingExport;
+  const result = await shareFile(file);
+  if (result === "shared") {
+    clearPendingExport();
+    statusText.textContent = mode === "save" ? "Saved" : "Shared";
+  } else if (result === "cancelled") {
+    statusText.textContent = mode === "save" ? `Not saved. Tap ${saveExportButton.textContent} to try again.` : "Share canceled";
+  } else {
+    clearPendingExport();
+    // Android already downloaded the file before offering to share it.
+    statusText.textContent = mode === "save" ? downloadExport(file, file.name) : `Sharing is not available here; ${file.name} is in Downloads.`;
+  }
+}
+
+function currentFramePng() {
+  // Synchronous, so a phone's share sheet still counts as part of the tap.
+  return dataUrlToBlob(previewCanvas.toDataURL("image/png"));
+}
+
+async function saveOrShareFrame(blob, shared) {
+  const result = await shareFile(exportFile(blob, "zoom-loop-frame.png"));
+  if (result === "shared") statusText.textContent = shared;
+  else if (result === "cancelled") statusText.textContent = "Share canceled";
+  else if (result === "blocked") statusText.textContent = offerExport(blob, "zoom-loop-frame.png", "image");
+  else statusText.textContent = downloadExport(blob, "zoom-loop-frame.png");
 }
 
 async function downloadCanvasPng() {
   if (isBusy() || !state.images.length) return;
   try {
-    const blob = await canvasToBlob("image/png");
-    downloadBlob(blob, "zoom-loop-frame.png");
+    clearPendingExport();
+    if (savesThroughShareSheet()) await saveOrShareFrame(currentFramePng(), "Saved");
+    else statusText.textContent = downloadExport(await canvasToBlob("image/png"), "zoom-loop-frame.png");
   } catch (error) { statusText.textContent = `PNG export failed: ${error.message}`; }
 }
 
 async function shareCurrentFrame() {
   if (isBusy() || !state.images.length) return;
   try {
-    const blob = await canvasToBlob("image/png");
-    await shareOrDownloadBlob(blob, "zoom-loop-frame.png", "Zoom Loop frame");
+    await saveOrShareFrame(currentFramePng(), "Shared");
   } catch (error) { statusText.textContent = `Frame sharing failed: ${error.message}`; }
 }
 
 async function recordWebm() {
   if (state.images.length < 2 || isBusy()) return;
-  if (!previewCanvas.captureStream || !window.MediaRecorder) {
+  const encodeFrames = canEncodeFrames();
+  if (!encodeFrames && (!previewCanvas.captureStream || !window.MediaRecorder)) {
     statusText.textContent = "Recording is not supported";
     return;
   }
@@ -1734,70 +2175,42 @@ async function recordWebm() {
   const previousProgress = state.progress;
   const previousPlaying = state.isPlaying;
   const controller = new AbortController();
+  clearPendingExport();
   state.exportController = controller;
   state.isRecording = true;
   state.isPlaying = false;
   state.isPickingPortal = false;
   updateStatus();
   webmButton.textContent = "Recording";
-  let stream;
-  let recorder;
   let recordingError;
   let completed = false;
+  let savedMessage = "Video ready";
+  // Keep a phone from dimming and locking partway through a long export.
+  const wakeLock = navigator.wakeLock?.request("screen").catch(() => null);
   try {
     const settings = getSettings();
     await prepareTransitions(settings, controller.signal);
     if (controller.signal.aborted) return;
-    state.progress = 0;
-    timelineInput.value = "0";
-    drawCurrentFrame();
-    const chunks = [];
-    stream = previewCanvas.captureStream(settings.fps);
-    const mimeType = getRecorderMimeType();
-    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunks.push(event.data);
-    };
-    let captureError;
-    const finished = new Promise((resolve) => {
-      recorder.onstop = resolve;
-      recorder.onerror = (event) => { captureError = event.error || new Error("Video capture failed"); resolve(); };
-    });
-    recorder.start();
     const totalFrames = getTransitionFrames(settings) * state.images.length;
-    const started = performance.now();
-    for (let frame = 0; frame < totalFrames; frame++) {
-      if (captureError) throw captureError;
-      if (controller.signal.aborted) break;
-      if (recorder.state === "inactive") throw new Error("Video capture stopped early");
-      state.progress = frame / totalFrames;
-      timelineInput.value = String(Math.round(state.progress * 1000));
-      drawCurrentFrame();
-      statusText.textContent = `Exporting video ${Math.round((frame + 1) / totalFrames * 100)}%`;
-      const nextFrameAt = started + (frame + 1) * 1000 / settings.fps;
-      await waitForExportFrame(Math.max(0, nextFrameAt - performance.now()), controller.signal);
-    }
-    if (recorder.state !== "inactive") recorder.stop();
-    let stopTimer;
-    try {
-      await Promise.race([finished, new Promise((_, reject) => {
-        stopTimer = setTimeout(() => reject(new Error("Video capture did not finish")), 5000);
-      })]);
-    } finally { clearTimeout(stopTimer); }
-    if (captureError) throw captureError;
-    if (controller.signal.aborted) return;
-    const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || "video/webm" });
+    const config = encodeFrames ? await findEncoderConfig(settings) : null;
+    const blob = config
+      ? await encodeLoopFrames(settings, totalFrames, config, controller.signal)
+      : await recordLoopRealtime(settings, totalFrames, controller.signal);
+    if (controller.signal.aborted || !blob) return;
     if (!blob.size) throw new Error("No video frames were captured");
     const fileName = `zoom-loop.${getVideoExtension(blob.type)}`;
-    await shareOrDownloadBlob(blob, fileName, "Zoom Loop video");
+    const reduced = config && config.width !== settings.size ? ` This device exports up to ${config.width} × ${config.height}.` : "";
+    // Recording outlasts the tap that started it, so a phone's share sheet
+    // needs one more tap; see savePendingExport.
+    savedMessage = offerExport(blob, fileName, "video") + reduced;
     completed = true;
   } catch (error) {
-    recordingError = error;
+    // Browsers reclaim video encoders from pages left in the background.
+    recordingError = /reclaim/i.test(error?.message || "") || document.hidden
+      ? new Error("the app left the screen. Keep Zoom Loop open until the export finishes")
+      : error;
   } finally {
-    if (recorder && recorder.state !== "inactive") {
-      try { recorder.stop(); } catch { /* Tracks are released below, too. */ }
-    }
-    stream?.getTracks().forEach((track) => track.stop());
+    wakeLock?.then((lock) => lock?.release()).catch(() => {});
     state.isRecording = false;
     state.exportController = null;
     state.progress = previousProgress;
@@ -1814,7 +2227,145 @@ async function recordWebm() {
     }
     if (recordingError) statusText.textContent = `Recording failed: ${recordingError.message}`;
     else if (controller.signal.aborted) statusText.textContent = "Export cancelled";
-    else if (completed) statusText.textContent = "Video ready";
+    else if (completed) statusText.textContent = savedMessage;
+  }
+}
+
+function drawExportFrame(frame, totalFrames) {
+  state.progress = frame / totalFrames;
+  timelineInput.value = String(Math.round(state.progress * 1000));
+  drawCurrentFrame();
+  // Phones suspend a page that leaves the screen, which stops the export.
+  statusText.textContent = `Exporting video ${Math.round((frame + 1) / totalFrames * 100)}%${isPhoneOrTablet() ? " · keep this screen open" : ""}`;
+}
+
+// Rendering every frame and stamping its exact time keeps the video smooth
+// and complete however slowly a phone renders. Real-time capture dropped or
+// repeated frames whenever a frame took longer than its slot, and Safari's
+// recorder started late enough to lose the opening of the loop.
+function canEncodeFrames() {
+  return Boolean(window.VideoEncoder && window.VideoFrame && window.Mp4Muxer);
+}
+
+async function findEncoderConfig(settings) {
+  // Some phone encoders cannot handle the largest sizes; export a smaller
+  // MP4 rather than falling back to real-time capture.
+  for (const size of [settings.size, 1440, 1080, 720].filter((value, index, list) => value <= settings.size && list.indexOf(value) === index)) {
+    const macroblocks = Math.ceil(size / 16) ** 2;
+    // Smallest H.264 level whose frame size and macroblock rate fit.
+    const levels = [[0x28, 8192, 245760], [0x2a, 8704, 522240], [0x32, 22080, 589824], [0x33, 36864, 983040], [0x34, 36864, 2073600]];
+    const level = levels.find(([, frame, rate]) => macroblocks <= frame && macroblocks * settings.fps <= rate);
+    if (!level) continue;
+    // About 5 Mbit/s for 1080 at 30 fps. The file is held in memory until it
+    // is finished, so the rate is capped for long, large exports on phones.
+    const bitrate = Math.round(clamp(size * size * settings.fps * 0.15, 2e6, 25e6));
+    for (const profile of ["6400", "4d00", "42e0"]) {
+      for (const code of [level[0], 0x33, 0x34].filter((value, index, list) => value >= level[0] && list.indexOf(value) === index)) {
+        const config = { codec: `avc1.${profile}${code.toString(16)}`, width: size, height: size, bitrate, framerate: settings.fps, avc: { format: "avc" } };
+        try {
+          if ((await VideoEncoder.isConfigSupported(config)).supported) return config;
+        } catch { /* Try the next profile. */ }
+      }
+    }
+  }
+  return null;
+}
+
+async function encodeLoopFrames(settings, totalFrames, config, signal) {
+  const target = new Mp4Muxer.ArrayBufferTarget();
+  const muxer = new Mp4Muxer.Muxer({ target, fastStart: "in-memory",
+    video: { codec: "avc", width: config.width, height: config.height, frameRate: settings.fps } });
+  let failure;
+  // When this device can only encode a smaller size, scale each frame down.
+  const scaled = config.width === previewCanvas.width ? null : makeCanvas(config.width, config.height);
+  const scaledCtx = scaled?.getContext("2d");
+  const encoder = new VideoEncoder({
+    output: (chunk, metadata) => muxer.addVideoChunk(chunk, metadata),
+    error: (error) => { failure = error; }
+  });
+  try {
+    encoder.configure(config);
+    const frameDuration = 1e6 / settings.fps;
+    for (let frame = 0; frame < totalFrames; frame++) {
+      if (failure) throw failure;
+      if (signal.aborted) return null;
+      drawExportFrame(frame, totalFrames);
+      if (scaled) scaledCtx.drawImage(previewCanvas, 0, 0, scaled.width, scaled.height);
+      const videoFrame = new VideoFrame(scaled || previewCanvas, {
+        timestamp: Math.round(frame * frameDuration), duration: Math.round(frameDuration)
+      });
+      try { encoder.encode(videoFrame, { keyFrame: frame % (settings.fps * 2) === 0 }); } finally { videoFrame.close(); }
+      // Let the encoder drain, the page repaint, and Cancel respond.
+      while (encoder.encodeQueueSize > 3 && !failure && !signal.aborted) await waitForExportFrame(4, signal);
+      await waitForExportFrame(0, signal);
+    }
+    if (signal.aborted) return null;
+    await encoder.flush();
+    if (failure) throw failure;
+    muxer.finalize();
+    return new Blob([target.buffer], { type: "video/mp4" });
+  } finally {
+    if (encoder.state !== "closed") encoder.close();
+  }
+}
+
+async function recordLoopRealtime(settings, totalFrames, signal) {
+  let stream;
+  let recorder;
+  try {
+    drawExportFrame(0, totalFrames);
+    // A manually triggered capture records exactly the frames drawn, rather
+    // than sampling the canvas on a timer that drifts from the renderer.
+    stream = previewCanvas.captureStream(0);
+    const track = stream.getVideoTracks()[0];
+    const manual = typeof track?.requestFrame === "function";
+    if (!manual) {
+      stream.getTracks().forEach((item) => item.stop());
+      stream = previewCanvas.captureStream(settings.fps);
+    }
+    const chunks = [];
+    const mimeType = getRecorderMimeType();
+    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
+    };
+    let captureError;
+    let markStarted;
+    const started = new Promise((resolve) => { markStarted = resolve; });
+    const finished = new Promise((resolve) => {
+      recorder.onstop = resolve;
+      recorder.onerror = (event) => { captureError = event.error || new Error("Video capture failed"); markStarted(); resolve(); };
+    });
+    recorder.onstart = markStarted;
+    recorder.start();
+    // Safari begins capturing some time after start(); frames drawn before
+    // then were lost from the opening of the video.
+    await Promise.race([started, waitForExportFrame(1500, signal)]);
+    const begin = performance.now();
+    for (let frame = 0; frame < totalFrames; frame++) {
+      if (captureError) throw captureError;
+      if (signal.aborted) break;
+      if (recorder.state === "inactive") throw new Error("Video capture stopped early");
+      drawExportFrame(frame, totalFrames);
+      if (manual) track.requestFrame();
+      const nextFrameAt = begin + (frame + 1) * 1000 / settings.fps;
+      await waitForExportFrame(Math.max(0, nextFrameAt - performance.now()), signal);
+    }
+    if (recorder.state !== "inactive") recorder.stop();
+    let stopTimer;
+    try {
+      await Promise.race([finished, new Promise((_, reject) => {
+        stopTimer = setTimeout(() => reject(new Error("Video capture did not finish")), 5000);
+      })]);
+    } finally { clearTimeout(stopTimer); }
+    if (captureError) throw captureError;
+    if (signal.aborted) return null;
+    return new Blob(chunks, { type: recorder.mimeType || mimeType || "video/webm" });
+  } finally {
+    if (recorder && recorder.state !== "inactive") {
+      try { recorder.stop(); } catch { /* Tracks are released below, too. */ }
+    }
+    stream?.getTracks().forEach((track) => track.stop());
   }
 }
 
@@ -1881,6 +2432,7 @@ stagePlayButton.addEventListener("click", togglePlayback);
 pngButton.addEventListener("click", downloadCanvasPng);
 shareButton.addEventListener("click", shareCurrentFrame);
 webmButton.addEventListener("click", recordWebm);
+saveExportButton.addEventListener("click", savePendingExport);
 cancelExportButton.addEventListener("click", () => {
   state.exportController?.abort();
   cancelExportButton.disabled = true;
@@ -1916,7 +2468,15 @@ autoTuneButton.addEventListener("click", autoTuneLoop);
 smoothDefaultsButton.addEventListener("click", applySmoothDefaults);
 portalPickButton.addEventListener("click", togglePortalPickMode);
 portalClearButton.addEventListener("click", clearCurrentPortalPick);
-previewCanvas.addEventListener("click", handlePortalCanvasClick);
+previewCanvas.addEventListener("pointerdown", handlePickPointerDown);
+previewCanvas.addEventListener("pointermove", handlePickPointerMove);
+previewCanvas.addEventListener("pointerup", handlePickPointerUp);
+previewCanvas.addEventListener("pointercancel", cancelPickDrag);
+pickerPrevButton.addEventListener("click", () => startPickingSegment(state.pickSegment - 1));
+pickerNextButton.addEventListener("click", () => startPickingSegment(state.pickSegment + 1));
+pickerAutoButton.addEventListener("click", clearCurrentPortalPick);
+pickerPlayButton.addEventListener("click", togglePickPreview);
+pickerDoneButton.addEventListener("click", finishPortalPicking);
 
 timelineInput.addEventListener("input", () => {
   state.isPickingPortal = false;
@@ -1935,21 +2495,14 @@ controls.forEach((control) => {
     if (control === sizeInput) setCanvasSize(getSettings().size);
     if (
       control !== sizeInput &&
-      control !== framesInput &&
-      control !== fpsInput &&
-      control !== zoomRateInput
+      control !== durationInput &&
+      control !== fpsInput
     ) {
       invalidateTransitions();
     }
     drawCurrentFrame();
   });
 });
-
-for (const control of [framesInput, fpsInput]) {
-  control.addEventListener("change", () => {
-    control.value = String(control === framesInput ? getSettings().frames : getSettings().fps);
-  });
-}
 
 registerServiceWorker();
 setupInstallPrompt();

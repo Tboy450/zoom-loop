@@ -7,10 +7,14 @@ const PhotoZoom = (() => {
   const HALO = 0.5;
   const SPAN = 1 + HALO * 2;
   const FRAME = 0.8;
+  const MAX_LAYER = 4096;
   const analysisCache = new WeakMap();
   const extensionCache = new WeakMap();
   const layers = [];
   const detailCache = new WeakMap();
+  const featureCache = new WeakMap();
+  const anchorFields = new WeakMap();
+  const matchCache = new WeakMap();
   let detailCutout;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const mix = (a, b, t) => a + (b - a) * t;
@@ -35,21 +39,43 @@ const PhotoZoom = (() => {
   function drawExtended(ctx, source, x, y, size) {
     const pad = size * HALO;
     const w = source.width, h = source.height;
-    // Continue the boundary pixels outside the photo without rescaling its
-    // contents. The single, correctly aligned photo remains in the center.
-    ctx.drawImage(source, 0, 0, w, 1, x, y - pad, size, pad);
-    ctx.drawImage(source, 0, h - 1, w, 1, x, y + size, size, pad);
-    ctx.drawImage(source, 0, 0, 1, h, x - pad, y, pad, size);
-    ctx.drawImage(source, w - 1, 0, 1, h, x + size, y, pad, size);
-    ctx.drawImage(source, 0, 0, 1, 1, x - pad, y - pad, pad, pad);
-    ctx.drawImage(source, w - 1, 0, 1, 1, x + size, y - pad, pad, pad);
-    ctx.drawImage(source, 0, h - 1, 1, 1, x - pad, y + size, pad, pad);
-    ctx.drawImage(source, w - 1, h - 1, 1, 1, x + size, y + size, pad, pad);
+    // Reflect the photo across each edge. Stretching only the boundary row
+    // painted visible streaks (or, once blurred, a soft box) around every
+    // join; a reflection keeps the photo's own texture and lighting there.
+    for (const sy of [-1, 0, 1]) {
+      for (const sx of [-1, 0, 1]) {
+        if (!sx && !sy) continue;
+        ctx.save();
+        ctx.translate(sx < 0 ? x : sx > 0 ? x + size : 0, sy < 0 ? y : sy > 0 ? y + size : 0);
+        ctx.scale(sx ? -1 : 1, sy ? -1 : 1);
+        const srcX = sx > 0 ? w * (1 - HALO) : 0, srcW = sx ? w * HALO : w;
+        const srcY = sy > 0 ? h * (1 - HALO) : 0, srcH = sy ? h * HALO : h;
+        ctx.drawImage(source, srcX, srcY, srcW, srcH,
+          sx > 0 ? -pad : sx < 0 ? 0 : x, sy > 0 ? -pad : sy < 0 ? 0 : y, sx ? pad : size, sy ? pad : size);
+        ctx.restore();
+      }
+    }
     ctx.drawImage(source, x, y, size, size);
   }
 
   function analysis(source) {
-    if (!analysisCache.has(source)) analysisCache.set(source, pixels(source, 128));
+    if (!analysisCache.has(source)) {
+      const data = pixels(source, 128);
+      const stride = data.width + 1;
+      data.integrals = Array.from({ length: 4 }, () => new Float64Array(stride * stride));
+      for (let y = 0; y < data.height; y++) {
+        const row = [0, 0, 0, 0];
+        for (let x = 0; x < data.width; x++) {
+          const i = (y * data.width + x) * 4;
+          const light = data.data[i] * 0.2126 + data.data[i + 1] * 0.7152 + data.data[i + 2] * 0.0722;
+          for (let c = 0; c < 4; c++) {
+            row[c] += c === 3 ? light * light : data.data[i + c];
+            data.integrals[c][(y + 1) * stride + x + 1] = row[c] + data.integrals[c][y * stride + x + 1];
+          }
+        }
+      }
+      analysisCache.set(source, data);
+    }
     return analysisCache.get(source);
   }
 
@@ -63,7 +89,14 @@ const PhotoZoom = (() => {
     for (let y = 0; y < TEXTURE_SIZE; y++) {
       for (let x = 0; x < TEXTURE_SIZE; x++) {
         const pixel = y * TEXTURE_SIZE + x;
-        for (let c = 0; c < 3; c++) data.data[pixel * 4 + c] = low[pixel * 3 + c];
+        // Keep the photo, and its reflected detail just past the edge, sharp.
+        // A uniformly blurred backing showed up as a soft ring at every join.
+        const u = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO, v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
+        const detail = 1 - smooth(0, 0.3, Math.max(0, -u, u - 1, -v, v - 1));
+        for (let c = 0; c < 3; c++) {
+          const i = pixel * 4 + c;
+          data.data[i] = mix(low[pixel * 3 + c], data.data[i], detail);
+        }
       }
     }
     ctx.putImageData(data, 0, 0);
@@ -127,84 +160,148 @@ const PhotoZoom = (() => {
 
   function patchSamples(data, x, y, width) {
     const values = new Float32Array(8 * 8 * 3);
+    const texture = new Float32Array(64);
+    const edges = new Float32Array(112);
     const mean = [0, 0, 0];
+    const integralAt = (c, u, v) => {
+      const px = clamp(u * data.width, 0, data.width), py = clamp(v * data.height, 0, data.height);
+      const ix = Math.floor(px), iy = Math.floor(py);
+      const nx = Math.min(ix + 1, data.width), ny = Math.min(iy + 1, data.height);
+      const stride = data.width + 1, sum = data.integrals[c];
+      return mix(mix(sum[iy * stride + ix], sum[iy * stride + nx], px - ix),
+        mix(sum[ny * stride + ix], sum[ny * stride + nx], px - ix), py - iy);
+    };
+    let edgeIndex = 0;
     for (let row = 0; row < 8; row++) {
       for (let col = 0; col < 8; col++) {
+        const left = x + col / 8 * width, top = y + row / 8 * width;
+        const right = left + width / 8, bottom = top + width / 8;
+        const area = (right - left) * (bottom - top) * data.width * data.height;
+        const average = c => (integralAt(c, right, bottom) - integralAt(c, left, bottom) -
+          integralAt(c, right, top) + integralAt(c, left, top)) / area;
+        const r = average(0), g = average(1), b = average(2);
+        const light = r * 0.2126 + g * 0.7152 + b * 0.0722;
+        const components = [light / 255, (r - light) / 255, (b - light) / 255];
+        const index = row * 8 + col;
         for (let c = 0; c < 3; c++) {
-          const value = sample(data, x + (col + 0.5) / 8 * width,
-            y + (row + 0.5) / 8 * width, c);
-          values[(row * 8 + col) * 3 + c] = value;
-          mean[c] += value / 64;
+          values[index * 3 + c] = components[c];
+          mean[c] += components[c] / 64;
         }
+        texture[index] = Math.sqrt(Math.max(0, average(3) - light * light)) / 255;
+        if (col) edges[edgeIndex++] = values[index * 3] - values[(index - 1) * 3];
+        if (row) edges[edgeIndex++] = values[index * 3] - values[(index - 8) * 3];
       }
     }
-    return { values, mean };
+    return { values, mean, texture, edges };
   }
 
-  function comparePatches(candidate, target) {
-    let pattern = 0;
-    let texture = 0;
-    let edges = 0;
-    let edgeCount = 0;
+  function comparePatches(candidate, target, priority = "balanced") {
+    let pattern = 0, texture = 0, edges = 0, rim = 0;
     for (let i = 0; i < candidate.values.length; i++) {
       const c = i % 3;
       const a = candidate.values[i] - candidate.mean[c];
       const b = target.values[i] - target.mean[c];
-      pattern += Math.abs(a - b);
-      texture += Math.abs(Math.abs(a) - Math.abs(b));
-      for (const offset of [3, 24]) {
-        if (offset === 3 ? Math.floor(i / 3) % 8 === 0 : i < 24) continue;
-        edges += Math.abs((candidate.values[i] - candidate.values[i - offset]) -
-          (target.values[i] - target.values[i - offset]));
-        edgeCount++;
-      }
+      const weight = c === 0 ? 1 : 0.5;
+      pattern += Math.abs(a - b) * weight;
+      const pixel = Math.floor(i / 3), row = Math.floor(pixel / 8), col = pixel % 8;
+      if (!row || row === 7 || !col || col === 7) rim += Math.abs(candidate.values[i] - target.values[i]) * weight;
     }
-    const color = candidate.mean.reduce((sum, v, c) => sum + Math.abs(v - target.mean[c]), 0) / 3;
-    return (pattern * 0.5 + texture * 0.2) / candidate.values.length / 255 +
-      color / 255 * 0.22 + edges / edgeCount / 255 * 0.08;
+    for (let i = 0; i < 64; i++) texture += Math.abs(candidate.texture[i] - target.texture[i]);
+    for (let i = 0; i < 112; i++) edges += Math.abs(candidate.edges[i] - target.edges[i]);
+    const light = Math.abs(candidate.mean[0] - target.mean[0]);
+    const color = Math.hypot(candidate.mean[1] - target.mean[1], candidate.mean[2] - target.mean[2]);
+    const weights = priority === "lighting" ? [0.3, 0.28, 0.12, 0.06, 0.1, 0.14] :
+      priority === "structure" ? [0.13, 0.12, 0.27, 0.23, 0.13, 0.12] : [0.22, 0.2, 0.22, 0.12, 0.12, 0.12];
+    return light * weights[0] + color * weights[1] + pattern / 128 * weights[2] +
+      edges / 112 * weights[3] + texture / 64 * weights[4] + rim / 56 * weights[5];
   }
 
-  function findAnchor(parent, child, settings) {
+  function photoFeatures(source) {
+    if (!featureCache.has(source)) {
+      const data = analysis(source), inset = (1 - FRAME) / 2;
+      featureCache.set(source, { core: patchSamples(data, inset, inset, FRAME), full: patchSamples(data, 0, 0, 1) });
+    }
+    return featureCache.get(source);
+  }
+
+  function anchorCandidate(data, anchorX, anchorY, p) {
+    const inset = (1 - FRAME) / 2, x = anchorX - p / 2, y = anchorY - p / 2;
+    let boundary = 0;
+    for (let i = 0; i < 8; i++) {
+      const along = (i + 0.5) / 8, step = p / 16;
+      for (const edge of [0, 1]) {
+        for (let c = 0; c < 3; c++) {
+          boundary += Math.abs(sample(data, x + p * along, y + p * edge - step, c) - sample(data, x + p * along, y + p * edge + step, c));
+          boundary += Math.abs(sample(data, x + p * edge - step, y + p * along, c) - sample(data, x + p * edge + step, y + p * along, c));
+        }
+      }
+    }
+    return { anchorX, anchorY, core: patchSamples(data, x + p * inset, y + p * inset, p * FRAME),
+      full: patchSamples(data, x, y, p), boundary: boundary / (96 * 255) };
+  }
+
+  function anchorField(parent, p) {
+    let field = anchorFields.get(parent);
+    if (!field || field.patch !== p) {
+      const parentData = analysis(parent);
+      const margin = (1 - FRAME) / 2 + p / 2 + 0.05;
+      field = { patch: p, center: anchorCandidate(parentData, 0.5, 0.5, p), grids: [] };
+      for (const limit of [Math.max(0.32, margin), margin]) {
+        const grid = [];
+        for (let y = 0; y < 13; y++) for (let x = 0; x < 13; x++) {
+          grid.push(anchorCandidate(parentData, mix(limit, 1 - limit, x / 12), mix(limit, 1 - limit, y / 12), p));
+        }
+        field.grids.push(grid);
+      }
+      anchorFields.set(parent, field);
+    }
+    return field;
+  }
+
+  // Match quality across the parent, for showing people where a photo would
+  // blend in well. Lower match values are better, as in findAnchor.
+  function matchField(parent, child, settings) {
+    const target = photoFeatures(child);
+    return anchorField(parent, settings.patch).grids[1].map(candidate => ({
+      anchorX: candidate.anchorX, anchorY: candidate.anchorY,
+      match: comparePatches(candidate.core, target.core, settings.matchPriority) * 0.65 +
+        comparePatches(candidate.full, target.full, settings.matchPriority) * 0.35 + candidate.boundary * 0.04
+    }));
+  }
+
+  function findAnchor(parent, child, settings, quick = false) {
+    let children = matchCache.get(parent);
+    if (!children) matchCache.set(parent, children = new WeakMap());
+    let matches = children.get(child);
+    if (!matches) children.set(child, matches = new Map());
+    const key = `${settings.patch}:${settings.matchPriority || "balanced"}:${quick}`;
+    if (matches.has(key)) return matches.get(key);
     const parentData = analysis(parent);
-    const childData = analysis(child);
     const inset = (1 - FRAME) / 2;
-    const target = patchSamples(childData, inset, inset, FRAME);
-    const fullTarget = patchSamples(childData, 0, 0, 1);
+    const target = photoFeatures(child);
     const p = settings.patch;
     // Search inside the visible crop, not the unseen edges of the source.
     const margin = inset + p / 2 + 0.05;
     const centralMargin = Math.max(0.32, margin);
-    const score = (anchorX, anchorY) => {
-      const x = anchorX - p / 2, y = anchorY - p / 2;
-      const candidate = patchSamples(parentData, x + p * inset, y + p * inset, p * FRAME);
-      const fullCandidate = patchSamples(parentData, x, y, p);
-      let boundary = 0;
-      for (let i = 0; i < 8; i++) {
-        const along = (i + 0.5) / 8;
-        const step = p / 16;
-        for (const edge of [0, 1]) {
-          for (let c = 0; c < 3; c++) {
-            boundary += Math.abs(sample(parentData, x + p * along, y + p * edge - step, c) -
-              sample(parentData, x + p * along, y + p * edge + step, c));
-            boundary += Math.abs(sample(parentData, x + p * edge - step, y + p * along, c) -
-              sample(parentData, x + p * edge + step, y + p * along, c));
-          }
-        }
-      }
-      const match = comparePatches(candidate, target) * 0.75 +
-        comparePatches(fullCandidate, fullTarget) * 0.25 + boundary / (96 * 255) * 0.04;
-      return { anchorX, anchorY, match, score: match + Math.hypot(anchorX - 0.5, anchorY - 0.5) * 0.06 };
+    const score = candidate => {
+      const match = comparePatches(candidate.core, target.core, settings.matchPriority) * 0.65 +
+        comparePatches(candidate.full, target.full, settings.matchPriority) * 0.35 + candidate.boundary * 0.04;
+      return { anchorX: candidate.anchorX, anchorY: candidate.anchorY, match,
+        score: match + Math.hypot(candidate.anchorX - 0.5, candidate.anchorY - 0.5) * 0.06 };
     };
-    const search = (limit) => {
-      let best = score(0.5, 0.5);
+    const field = anchorField(parent, p);
+    const search = (limit, grid) => {
+      let best = score(field.center);
       const consider = (x, y) => {
-        const candidate = score(clamp(x, limit, 1 - limit), clamp(y, limit, 1 - limit));
+        const candidate = score(anchorCandidate(parentData, clamp(x, limit, 1 - limit), clamp(y, limit, 1 - limit), p));
         if (candidate.score < best.score) best = candidate;
       };
-      for (let y = 0; y < 13; y++) {
-        for (let x = 0; x < 13; x++) consider(mix(limit, 1 - limit, x / 12), mix(limit, 1 - limit, y / 12));
+      for (let i = 0; i < grid.length; i++) {
+        if (quick && (i % 13 % 2 || Math.floor(i / 13) % 2)) continue;
+        const candidate = score(grid[i]);
+        if (candidate.score < best.score) best = candidate;
       }
-      for (const step of [0.025, 0.008]) {
+      for (const step of quick ? [] : [0.025, 0.008]) {
         const { anchorX, anchorY } = best;
         for (let y = -1; y <= 1; y++) {
           for (let x = -1; x <= 1; x++) consider(anchorX + x * step, anchorY + y * step);
@@ -212,23 +309,38 @@ const PhotoZoom = (() => {
       }
       return best;
     };
-    const central = search(centralMargin);
-    const wide = search(margin);
+    const central = search(centralMargin, field.grids[0]);
+    const wide = search(margin, field.grids[1]);
     const offCenter = Math.min(wide.anchorX, wide.anchorY, 1 - wide.anchorX, 1 - wide.anchorY) < centralMargin;
     const improvement = central.match - wide.match;
     // Small score differences are not evidence that a long camera pan is better.
     const useWide = wide.score < central.score &&
       (!offCenter || improvement >= Math.max(0.025, central.match * 0.2));
     const best = useWide ? wide : central;
-    return {
+    const result = {
       anchorX: best.anchorX,
       anchorY: best.anchorY,
+      match: best.match,
+      score: best.score,
       placement: {
         mode: "auto",
         reason: useWide && offCenter ? "stronger-match" : "balanced",
         matchImprovement: useWide && offCenter ? improvement : 0
       }
     };
+    if (matches.size >= 12) matches.delete(matches.keys().next().value);
+    matches.set(key, result);
+    return result;
+  }
+
+  function matchPair(parent, child, settings, override, quick = false) {
+    if (settings.autoAnchor && !override) return findAnchor(parent, child, settings, quick);
+    const point = rect({ ...settings, ...override });
+    const candidate = anchorCandidate(analysis(parent), point.x + point.size / 2, point.y + point.size / 2, point.size);
+    const target = photoFeatures(child);
+    const match = comparePatches(candidate.core, target.core, settings.matchPriority) * 0.65 +
+      comparePatches(candidate.full, target.full, settings.matchPriority) * 0.35 + candidate.boundary * 0.04;
+    return { anchorX: candidate.anchorX, anchorY: candidate.anchorY, match, score: match };
   }
 
   function rect(settings) {
@@ -329,8 +441,10 @@ const PhotoZoom = (() => {
     drawExtended(childCtx, child, TEXTURE_SIZE * HALO / SPAN, TEXTURE_SIZE * HALO / SPAN, TEXTURE_SIZE / SPAN);
     const childData = childCtx.getImageData(0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
     if (settings.mode === "stitched") {
+      // Stitched World keeps every photo's own colors throughout.
       return { ...createStitchedTransition(parentData, childData, childExtension, settings, portal), placement };
     }
+    const grade = createGrade(parentData, childData, settings);
     const radius = Math.round(18 + settings.sampleBlend * 38);
     const parentLow = lowPass(parentData, radius);
     const childLow = lowPass(childData, radius);
@@ -385,7 +499,89 @@ const PhotoZoom = (() => {
     }
     ctx.putImageData(embedded, 0, 0);
     cutoutCtx.putImageData(mask, 0, 0);
-    return { settings, rect: portal, texture, cutout, extension: childExtension, placement };
+    const surround = createSurround(parentData, childData, settings);
+    return { settings, rect: portal, texture, cutout, extension: surround, placement, grade };
+  }
+
+  function createGrade(parent, child, settings) {
+    // Match the incoming photo's overall color to the area it replaces while
+    // it is small, then relax to its true color as it fills the screen. The
+    // grade is uniform across the photo, so it cannot draw an inner frame,
+    // and fades out across the halo along with the lighting handoff.
+    const mean = data => {
+      const sum = [0, 0, 0];
+      let count = 0;
+      for (let y = 2; y < TEXTURE_SIZE; y += 4) {
+        for (let x = 2; x < TEXTURE_SIZE; x += 4) {
+          const u = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO, v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
+          if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+          const i = (y * TEXTURE_SIZE + x) * 4;
+          for (let c = 0; c < 3; c++) sum[c] += data.data[i + c];
+          count++;
+        }
+      }
+      return sum.map(value => value / count / 255);
+    };
+    const target = mean(parent), source = mean(child);
+    const gains = target.map((value, c) => clamp((value + 0.03) / (source[c] + 0.03), 0.45, 2.2));
+    if (gains.every(gain => Math.abs(gain - 1) < 0.02)) return null;
+    // Darkening uses multiply; brightening uses screen, sized so the mean of
+    // each channel lands where the gain would put it.
+    const multiply = gains.map(gain => Math.min(1, gain));
+    const screen = gains.map((gain, c) => gain <= 1 ? 0 : clamp((gain - 1) * source[c] / Math.max(0.04, 1 - source[c]), 0, 1));
+    const size = 64, reach = mix(0.32, 0.5, settings.edgeBlend);
+    const layers = [multiply, screen].map((color, layer) => {
+      const result = canvas(size);
+      const ctx = result.getContext("2d");
+      const image = ctx.createImageData(size, size);
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const u = (x + 0.5) / size * SPAN - HALO, v = (y + 0.5) / size * SPAN - HALO;
+          const weight = 1 - smooth(0, reach, Math.hypot(Math.max(0, -u, u - 1), Math.max(0, -v, v - 1)));
+          const i = (y * size + x) * 4;
+          for (let c = 0; c < 3; c++) image.data[i + c] = 255 * (layer ? color[c] * weight : 1 - (1 - color[c]) * weight);
+          image.data[i + 3] = 255;
+        }
+      }
+      ctx.putImageData(image, 0, 0);
+      return result;
+    });
+    return { multiply: layers[0], screen: layers[1], strength: 0.7 * settings.bind };
+  }
+
+  function createSurround(parent, child, settings) {
+    // Backing for a growing photo: the photo itself inside its edge, then a
+    // multiband handoff to the parent's own material. Fine texture switches
+    // to the parent almost at the edge, while lighting and color grade over
+    // the whole feather, so the join shows neither a blur ring nor mirrored
+    // copies of the incoming photo.
+    const radii = [3, 14, 48];
+    const parentBands = radii.map(radius => lowPass(parent, radius));
+    const childBands = radii.map(radius => lowPass(child, radius));
+    const reach = [0.03, 0.08, 0.18, mix(0.32, 0.5, settings.edgeBlend)];
+    const result = canvas(TEXTURE_SIZE);
+    const ctx = result.getContext("2d");
+    const out = ctx.createImageData(TEXTURE_SIZE, TEXTURE_SIZE);
+    for (let y = 0; y < TEXTURE_SIZE; y++) {
+      for (let x = 0; x < TEXTURE_SIZE; x++) {
+        const pixel = y * TEXTURE_SIZE + x;
+        const u = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO, v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
+        const outside = Math.hypot(Math.max(0, -u, u - 1), Math.max(0, -v, v - 1));
+        const weights = reach.map(r => smooth(0, r, outside));
+        for (let c = 0; c < 3; c++) {
+          const i = pixel * 4 + c, k = pixel * 3 + c;
+          if (outside <= 0) { out.data[i] = child.data[i]; continue; }
+          out.data[i] =
+            mix(child.data[i] - childBands[0][k], parent.data[i] - parentBands[0][k], weights[0]) +
+            mix(childBands[0][k] - childBands[1][k], parentBands[0][k] - parentBands[1][k], weights[1]) +
+            mix(childBands[1][k] - childBands[2][k], parentBands[1][k] - parentBands[2][k], weights[2]) +
+            mix(childBands[2][k], parentBands[2][k], weights[3]);
+        }
+        out.data[pixel * 4 + 3] = 255;
+      }
+    }
+    ctx.putImageData(out, 0, 0);
+    return result;
   }
 
   function createStitchedTransition(parent, child, childExtension, settings, portal) {
@@ -410,13 +606,16 @@ const PhotoZoom = (() => {
         const d = Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5));
         const offset = contour ? (0.52 - contourRadius(contour.radii, u, v)) * settings.shapeMorph : 0;
         const distance = d + offset * smooth(0.405, 0.5, d);
+        // Past the photo edge the child is only a reflection of itself. Hand
+        // fine and medium detail to the parent's real material within a few
+        // percent, or the reflection reads as a mirrored copy around the join.
+        const outside = Math.max(0, d - 0.5);
         const fine = (1 - smooth(mix(0.48, 0.415, settings.edgeBlend), mix(0.55, 0.71, settings.edgeBlend), distance)) *
-          (1 - smooth(0.5, 0.59, d));
+          (1 - smooth(0, 0.04, outside));
         const medium = (1 - smooth(0.4, mix(0.62, 0.85, settings.sampleBlend * 0.6 + settings.edgeBlend * 0.4), distance)) *
-          (1 - smooth(0.52, 0.8, d));
-        // Extrapolated edge detail must not become long straight streaks in
-        // the halo. Use the parent's actual material beyond the photo edge.
-        const broad = 1 - smooth(0.32, mix(0.76, 1, settings.edgeBlend), d + offset * 0.35);
+          (1 - smooth(0, 0.09, outside));
+        const broad = (1 - smooth(0.32, mix(0.76, 1, settings.edgeBlend), d + offset * 0.35)) *
+          (1 - smooth(0, 0.2, outside));
         const lighting = 1 - smooth(mix(0.45, 0.22, settings.bind), 1, d + offset * 0.15);
         for (let c = 0; c < 3; c++) {
           const k = pixel * 3 + c;
@@ -449,7 +648,7 @@ const PhotoZoom = (() => {
   function findStitchContour(parent, child, parentFine, childFine) {
     // Follow places where existing detail matches, rather than imposing a
     // repeating geometric border. Keep the central handoff crop untouched.
-    const angles = 192, choices = 25, low = 0.435, high = 0.625;
+    const angles = 192, choices = 25, low = 0.435, high = 0.545;
     const costs = new Float32Array(angles * choices);
     const radiusAt = index => mix(low, high, index / (choices - 1));
     for (let a = 0; a < angles; a++) {
@@ -506,7 +705,10 @@ const PhotoZoom = (() => {
 
   function layerAt(depth, projectedSize, outputSize) {
     const size = Math.max(1, Math.ceil(projectedSize));
-    const capacity = Math.min(Math.ceil(outputSize), Math.max(32, 2 ** Math.ceil(Math.log2(size))));
+    // iPhone and iPad refuse canvases over 4096 × 4096 pixels. The part of a
+    // layer the camera can show stays within 1.75× the output (3780 px at
+    // 2160), so the cap clips only material that is off screen.
+    const capacity = Math.min(Math.ceil(outputSize), MAX_LAYER, Math.max(32, 2 ** Math.ceil(Math.log2(size))));
     if (!layers[depth]) layers[depth] = canvas(capacity);
     const layer = layers[depth];
     if (layer.width < capacity || layer.width > outputSize) layer.width = layer.height = capacity;
@@ -542,11 +744,25 @@ const PhotoZoom = (() => {
       // Blend broad color and fine detail separately: an abrupt change from
       // a sharp photograph to a soft extension would itself reveal a box.
       local.drawImage(incoming.extension, shiftX, shiftY, span, span);
+      // Relaxes to the photo's own color well before it fills the screen,
+      // so the handoff to the next segment stays pixel-identical.
+      const grade = incoming.grade ? incoming.grade.strength * (1 - smooth(0.12, 0.85, coverage)) : 0;
+      const applyGrade = () => {
+        if (grade < 0.004) return;
+        local.globalAlpha = grade;
+        local.globalCompositeOperation = "multiply";
+        local.drawImage(incoming.grade.multiply, shiftX, shiftY, span, span);
+        local.globalCompositeOperation = "screen";
+        local.drawImage(incoming.grade.screen, shiftX, shiftY, span, span);
+        local.globalCompositeOperation = "source-over";
+        local.globalAlpha = 1;
+      };
       if (stitched) {
         drawProjectedPhoto(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize);
         local.drawImage(incoming.stitch, shiftX, shiftY, span, span);
       } else {
         drawPhotoDetail(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize);
+        applyGrade();
         local.globalAlpha = 1 - reveal;
         local.drawImage(incoming.texture, shiftX, shiftY, span, span);
       }
@@ -586,5 +802,5 @@ const PhotoZoom = (() => {
     return camera;
   }
 
-  return { createTransition, geometry, render };
+  return { createTransition, geometry, render, matchPair, matchField };
 })();

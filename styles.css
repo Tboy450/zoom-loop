@@ -161,6 +161,12 @@ h2 {
   background: #21312f;
 }
 
+#saveExportButton {
+  border-color: var(--accent);
+  background: #21312f;
+  font-weight: 700;
+}
+
 .canvas-wrap {
   container-type: size;
   min-height: 0;
@@ -174,6 +180,11 @@ h2 {
 
 .canvas-wrap.is-picking {
   cursor: crosshair;
+}
+
+/* Dragging the placement box must not scroll the page on touch screens. */
+.canvas-wrap.is-picking #previewCanvas {
+  touch-action: none;
 }
 
 .canvas-wrap.is-picking #previewCanvas {
@@ -226,12 +237,8 @@ h2 {
   opacity: 0.35;
 }
 
-.stage-play-button.is-playing {
-  opacity: 0.18;
-}
-
-.canvas-wrap:hover .stage-play-button.is-playing {
-  opacity: 0.86;
+.stage-play-button[hidden] {
+  display: none;
 }
 
 .stage-play-icon {
@@ -244,36 +251,9 @@ h2 {
   border-left: 23px solid var(--text);
 }
 
-.stage-play-button.is-playing .stage-play-icon {
-  position: relative;
-  width: 25px;
-  height: 30px;
-  margin-left: 0;
-  border: 0;
-}
-
-.stage-play-button.is-playing .stage-play-icon::before,
-.stage-play-button.is-playing .stage-play-icon::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  width: 8px;
-  height: 30px;
-  border-radius: 2px;
-  background: var(--text);
-}
-
-.stage-play-button.is-playing .stage-play-icon::before {
-  left: 2px;
-}
-
-.stage-play-button.is-playing .stage-play-icon::after {
-  right: 2px;
-}
-
 .timeline {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 52px;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   min-width: 0;
@@ -283,6 +263,7 @@ h2 {
   color: var(--muted);
   font-size: 13px;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 input[type="range"] {
@@ -583,4 +564,152 @@ input[type="range"] {
     grid-template-columns: 1fr;
     gap: 7px;
   }
+}
+
+.hint {
+  margin-top: -6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Slider rows: name and current value above a full-width slider. */
+.slider-field {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.slider-field > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.field output {
+  color: var(--text);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.timing-summary {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #121415;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.effects-section > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.effects-section > summary::before {
+  content: "B8";
+  color: var(--muted);
+}
+
+.effects-section[open] > summary::before {
+  content: "BE";
+}
+
+.effects-section > summary .hint {
+  margin: 0;
+}
+
+.picker-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(55, 192, 170, 0.6);
+  border-radius: 10px;
+  background: #15191a;
+  min-width: 0;
+}
+
+.picker-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+  align-items: baseline;
+}
+
+.picker-head strong {
+  font-size: 14px;
+}
+
+.picker-match {
+  font-size: 12px;
+  font-weight: 650;
+  color: #8fd1c3;
+}
+
+.picker-match[data-tone="ok"] {
+  color: var(--accent-3);
+}
+
+.picker-match[data-tone="warn"] {
+  color: #f6a66f;
+}
+
+.picker-panel .hint {
+  margin: 0;
+}
+
+.picker-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  transition: opacity 120ms ease;
+}
+
+.picker-strip.is-updating {
+  opacity: 0.45;
+}
+
+.picker-strip figure {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.picker-strip canvas {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #0b0c0d;
+}
+
+.picker-strip figcaption {
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.picker-actions button {
+  flex: 1 1 auto;
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+#pickerDoneButton {
+  border-color: var(--accent);
+  background: #21312f;
+  font-weight: 700;
 }

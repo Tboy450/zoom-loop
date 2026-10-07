@@ -1,13 +1,14 @@
 "use strict";
 
-const CACHE_NAME = "zoom-loop-v11";
-const ASSET_VERSION = "v11";
+const CACHE_NAME = "zoom-loop-v12";
+const ASSET_VERSION = "v12";
 const APP_ASSETS = [
   "./",
   "./index.html",
   `./styles.css?${ASSET_VERSION}`,
   `./app.js?${ASSET_VERSION}`,
   `./zoom-renderer.js?${ASSET_VERSION}`,
+  `./vendor/mp4-muxer.js?${ASSET_VERSION}`,
   `./manifest.webmanifest?${ASSET_VERSION}`,
   "./icons/icon.svg",
   "./icons/icon-192.png",

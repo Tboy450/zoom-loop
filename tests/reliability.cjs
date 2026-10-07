@@ -41,14 +41,20 @@ module.exports = async function testReliability(browser, url, fixtures) {
     assert.match(await page.locator("#statusText").textContent(), /3 images/);
 
     const numeric = await page.evaluate(() => {
-      framesInput.value = ""; fpsInput.value = "";
-      const blank = getSettings();
-      framesInput.value = "999999"; fpsInput.value = "-50";
+      // Unknown frame rates fall back to 30; the length slider clamps itself.
+      fpsInput.value = "999"; durationInput.value = "999";
       const extremes = getSettings();
-      framesInput.value = "24"; fpsInput.value = "30"; zoomRateInput.value = "250";
-      return [blank.frames, blank.fps, extremes.frames, extremes.fps];
+      durationInput.value = "2.5"; fpsInput.value = "60";
+      const chosen = getSettings();
+      durationInput.value = "1"; fpsInput.value = "24";
+      updateStatus();
+      return { extremes: [extremes.seconds, extremes.fps, extremes.frames], chosen: [chosen.seconds, chosen.fps, chosen.frames],
+        readout: document.querySelector("#durationReadout").textContent, summary: timingSummary.textContent };
     });
-    assert.deepEqual(numeric, [120, 30, 240, 12]);
+    assert.deepEqual(numeric.extremes, [15, 30, 450]);
+    assert.deepEqual(numeric.chosen, [2.5, 60, 150]);
+    assert.equal(numeric.readout, "1.0 s");
+    assert.match(numeric.summary, /Video length 0:03\.0 · 3 photos × 1\.0 s · 72 frames at 24 fps/);
 
     let converterRequests = 0;
     await page.route("**/heic2any.min.js", route => {
@@ -88,6 +94,9 @@ module.exports = async function testReliability(browser, url, fixtures) {
         window.testTracks = stream.getTracks();
         return stream;
       };
+      // The real-time recorder is the fallback when frame encoding is unavailable.
+      const originalEncoder = window.VideoEncoder;
+      window.VideoEncoder = undefined;
       for (const runtime of [false, true]) {
         window.MediaRecorder = class {
           static isTypeSupported() { return true; }
@@ -106,6 +115,21 @@ module.exports = async function testReliability(browser, url, fixtures) {
       }
       window.MediaRecorder = originalRecorder;
       previewCanvas.captureStream = originalCapture;
+      window.VideoEncoder = originalEncoder;
+      // Encoder failures must clean up the same way.
+      if (window.VideoEncoder) {
+        window.VideoEncoder = class {
+          static isConfigSupported(config) { return Promise.resolve({ supported: true, config }); }
+          constructor({ error }) { this.reportError = error; this.state = "unconfigured"; this.encodeQueueSize = 0; }
+          configure() { this.state = "configured"; }
+          encode() { setTimeout(() => this.reportError(new Error("Test encoder failure")), 0); }
+          flush() { return Promise.resolve(); }
+          close() { this.state = "closed"; window.testEncoderClosed = true; }
+        };
+        await recordWebm();
+        results.push({ recording: state.isRecording, progress: state.progress, released: window.testEncoderClosed === true, message: statusText.textContent });
+        window.VideoEncoder = originalEncoder;
+      }
       return results;
     });
     for (const failure of failures) {

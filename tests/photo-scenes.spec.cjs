@@ -80,7 +80,10 @@ const server = http.createServer((req, res) => {
             const rasterSteps = [];
             for (const threshold of [128.5, 256.5, 512.5, 1024.5]) {
               const t = Math.log(settings.patch * size * 2 / (0.8 * threshold)) / Math.log(settings.patch);
-              if (t > 0.02 && t < 0.98) rasterSteps.push({ t, threshold, ...delta(render(pair, t - 1e-7), render(pair, t + 1e-7)) });
+              // An equal step that crosses no pixel boundary measures the
+              // GPU's normal sub-texel filtering noise for this content.
+              if (t > 0.02 && t < 0.98) rasterSteps.push({ t, threshold, ...delta(render(pair, t - 1e-7), render(pair, t + 1e-7)),
+                control: delta(render(pair, t - 3e-7), render(pair, t - 1e-7)) });
             }
             const transition = getTransition(image, state.images[(pair + 1) % state.images.length], settings);
             let low = 0.97, high = 1;
@@ -125,12 +128,11 @@ const server = http.createServer((req, res) => {
     if (process.env.ZOOM_SCENE_VIDEO) {
       await page.locator("#renderModeInput").selectOption("stitched");
       await page.locator("#sizeInput").selectOption("720");
-      await page.locator("#framesInput").fill("48");
-      await page.locator("#fpsInput").fill("24");
-      await page.locator("#zoomRateInput").fill("100");
+      await page.locator("#durationInput").fill("2");
+      await page.locator("#fpsInput").selectOption("24");
       await page.evaluate(() => {
-        const original = shareOrDownloadBlob;
-        shareOrDownloadBlob = async (blob, ...args) => { window.recordedPhotoVideo = blob; return original(blob, ...args); };
+        const original = offerExport;
+        offerExport = (blob, ...args) => { window.recordedPhotoVideo = blob; return original(blob, ...args); };
       });
       const downloadPromise = page.waitForEvent("download");
       await page.locator("#webmButton").click();
@@ -163,7 +165,9 @@ const server = http.createServer((req, res) => {
     // A few boundary samples can cross an 8-bit filtering threshold. Allow
     // isolated antialiasing changes, while rejecting a visible region popping.
     const stableRaster = check => check.mean < 0.01 && check.significantFraction < 0.0001;
-    assert.ok(rasterChecks.every(stableRaster), "Fractional sampling must not pop when crossing whole pixels");
+    const noisyContent = check => check.control && check.mean < Math.max(0.01, check.control.mean * 1.5) &&
+      check.significantFraction < 0.0001;
+    assert.ok(rasterChecks.every(check => stableRaster(check) || noisyContent(check)), JSON.stringify(rasterChecks.filter(check => !stableRaster(check) && !noisyContent(check))));
     const featherExits = records.flatMap(record => record.checks.map(check => check.featherExit));
     assert.ok(featherExits.every(stableRaster), JSON.stringify(featherExits.filter(check => !stableRaster(check))));
   } finally { await browser.close(); }

@@ -6,6 +6,7 @@ const { chromium } = require("playwright");
 const testReliability = require("./reliability.cjs");
 const testProjects = require("./projects.cjs");
 const testFraming = require("./framing.cjs");
+const testMobileExport = require("./mobile-export.cjs");
 
 const root = path.resolve(__dirname, "..");
 const output = path.join(root, "test-results");
@@ -326,6 +327,29 @@ const server = http.createServer((req, res) => {
     await page.locator("#portalClearButton").click();
     assert.match(await page.locator("#portalHelp").textContent(), /Cleared/);
     assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
+    // The placement editor stays open, shows the join, and previews it
+    // without playback. Dragging maps the preview onto the parent photo.
+    assert.equal(await page.locator("#pickerPanel").isVisible(), true);
+    assert.match(await page.locator("#pickerTitle").textContent(), /^Join 1 of \d+: photo 2 inside photo 1$/);
+    await page.waitForFunction(() => pickerStrip.querySelectorAll("canvas").length === 4 && !pickerStrip.classList.contains("is-updating"));
+    const pickBox = await page.locator("#previewCanvas").boundingBox();
+    await page.mouse.move(pickBox.x + pickBox.width * 0.5, pickBox.y + pickBox.height * 0.5);
+    await page.mouse.down();
+    await page.mouse.move(pickBox.x + pickBox.width * 0.3, pickBox.y + pickBox.height * 0.7, { steps: 5 });
+    await page.mouse.up();
+    const dragged = await page.evaluate(() => getPortalOverride(state.images[0].id, state.images[1].id));
+    // The start of a join shows the central 80% of the parent photo.
+    assert.ok(Math.abs(dragged.anchorX - 0.34) < 0.01 && Math.abs(dragged.anchorY - 0.66) < 0.01, JSON.stringify(dragged));
+    assert.match(await page.locator("#pickerMatch").textContent(), /[Bb]lend/);
+    assert.equal(await page.locator("#pickerAutoButton").isDisabled(), false);
+    await page.locator("#pickerNextButton").click();
+    assert.match(await page.locator("#pickerTitle").textContent(), /^Join 2 of/);
+    await page.locator("#pickerPrevButton").click();
+    await page.locator("#pickerAutoButton").click();
+    assert.equal(await page.evaluate(() => getPortalOverride(state.images[0].id, state.images[1].id)), undefined);
+    await page.locator("#pickerDoneButton").click();
+    assert.equal(await page.locator("#pickerPanel").isVisible(), false);
+    assert.equal(await page.evaluate(() => state.isPickingPortal), false);
     await page.locator("#playButton").click();
     await page.waitForFunction(() => state.isPlaying && state.progress > 0.05);
     await page.locator("#playButton").click();
@@ -336,9 +360,8 @@ const server = http.createServer((req, res) => {
 
     await page.locator("#renderModeInput").selectOption("stitched");
     const exportProgress = await page.evaluate(() => state.progress);
-    await page.locator("#framesInput").fill("24");
-    await page.locator("#fpsInput").fill("30");
-    await page.locator("#zoomRateInput").fill("250");
+    await page.locator("#durationInput").fill("1");
+    await page.locator("#fpsInput").selectOption("24");
     const videoDownload = page.waitForEvent("download");
     await page.locator("#webmButton").click();
     assert.equal(await page.locator("#patchInput").isDisabled(), true);
@@ -352,6 +375,7 @@ const server = http.createServer((req, res) => {
     const reliability = await testReliability(browser, `http://127.0.0.1:${server.address().port}/`, fixtures);
     const projects = await testProjects(browser, `http://127.0.0.1:${server.address().port}/`, fixtures, output);
     const framing = await testFraming(browser, `http://127.0.0.1:${server.address().port}/`, output);
+    const mobileExport = await testMobileExport(browser, `http://127.0.0.1:${server.address().port}/`, fixtures);
 
     if (process.env.ZOOM_TEST_PHOTOS) {
       await page.locator("#clearButton").click();
@@ -418,8 +442,8 @@ const server = http.createServer((req, res) => {
     await page.evaluate(() => navigator.serviceWorker.ready);
     await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
     const cacheReady = await page.evaluate(async () => {
-      const cache = await caches.open("zoom-loop-v11");
-      return Boolean(await cache.match("./zoom-renderer.js?v11"));
+      const cache = await caches.open("zoom-loop-v12");
+      return Boolean(await cache.match("./zoom-renderer.js?v12"));
     });
     assert.equal(cacheReady, true);
     await page.context().setOffline(true);
@@ -429,7 +453,7 @@ const server = http.createServer((req, res) => {
     await page.waitForFunction(() => state.images.length === 3);
     assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
     assert.deepEqual(errors, []);
-    const result = { placementChecks, geometryChecks, concealment, seams, resolutions, fixedScene, scrub, reliability, projects, framing, offline: "passed", averageFrameMs: montage.averageMs, photos: photoCount, video: path.basename(videoPath) };
+    const result = { placementChecks, geometryChecks, concealment, seams, resolutions, fixedScene, scrub, reliability, projects, framing, mobileExport, offline: "passed", averageFrameMs: montage.averageMs, photos: photoCount, video: path.basename(videoPath) };
     fs.writeFileSync(path.join(output, "results.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ ...result, seams: `${seams.length} endpoint comparisons passed` }, null, 2));
   } finally {

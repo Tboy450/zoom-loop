@@ -15,7 +15,7 @@ module.exports = async function testProjects(browser, url, fixtures, output) {
       renderModeInput.value = "stitched";
       patchInput.value = "14"; edgeBlendInput.value = "71";
       autoAnchorInput.checked = false;
-      framesInput.value = ""; fpsInput.value = "999";
+      durationInput.value = "7.5"; fpsInput.value = "60";
       moveImage(0, 1);
       state.progress = 0.43;
       state.portalOverrides.set(getPairKey(state.images[0].id, state.images[1].id), { anchorX: 0.32, anchorY: 0.61 });
@@ -41,7 +41,7 @@ module.exports = async function testProjects(browser, url, fixtures, output) {
     await page.waitForFunction(() => !state.isPreparing);
     const saved = JSON.parse(fs.readFileSync(projectPath, "utf8"));
     assert.equal(saved.format, "zoom-loop");
-    assert.equal(saved.settings.framesInput, "120");
+    assert.equal(saved.settings.durationInput, "7.5");
     assert.equal(saved.settings.fpsInput, "60");
     await page.locator("#clearButton").click();
     await page.context().setOffline(true);
@@ -69,6 +69,15 @@ module.exports = async function testProjects(browser, url, fixtures, output) {
       assert.deepEqual(await page.evaluate(() => snapshot()), before);
       assert.equal(await page.locator("#saveProjectButton").isDisabled(), false);
     }
+    // Projects saved before seconds-per-photo stored frames and a zoom speed.
+    const legacySettings = { ...saved.settings, framesInput: "120", zoomRateInput: "100", fpsInput: "25" };
+    delete legacySettings.durationInput;
+    await page.locator("#projectFileInput").setInputFiles({ name: "legacy.zoomloop", mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify({ ...saved, settings: legacySettings })) });
+    await page.waitForFunction(() => !state.isLoading && /Opened/.test(projectHelp.textContent));
+    assert.deepEqual(await page.evaluate(() => [durationInput.value, fpsInput.value]), ["5", "24"]);
+    await page.locator("#projectFileInput").setInputFiles(projectPath);
+    await page.waitForFunction(() => !state.isLoading && /Opened/.test(projectHelp.textContent) && durationInput.value === "7.5");
     // A held decode keeps edits locked throughout opening the project.
     await page.evaluate(content => {
       const original = decodeNatively;

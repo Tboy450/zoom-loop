@@ -10,10 +10,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Zoom Loop">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="manifest.webmanifest?v11">
+    <link rel="manifest" href="manifest.webmanifest?v12">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
-    <link rel="stylesheet" href="styles.css?v11">
+    <link rel="stylesheet" href="styles.css?v12">
   </head>
   <body>
     <main class="app-shell">
@@ -30,6 +30,7 @@
             <button id="pngButton" type="button">PNG</button>
             <button id="webmButton" type="button">Video</button>
             <button id="cancelExportButton" class="is-hidden" type="button">Cancel export</button>
+            <button id="saveExportButton" class="is-hidden" type="button">Save video</button>
           </div>
         </div>
 
@@ -42,7 +43,23 @@
 
         <div class="timeline">
           <input id="timelineInput" type="range" min="0" max="1000" value="0" aria-label="Timeline">
-          <span id="timeReadout">0%</span>
+          <span id="timeReadout">0:00</span>
+        </div>
+
+        <div id="pickerPanel" class="picker-panel is-hidden" aria-live="polite">
+          <div class="picker-head">
+            <strong id="pickerTitle"></strong>
+            <span id="pickerMatch" class="picker-match"></span>
+          </div>
+          <p id="pickerHint" class="hint"></p>
+          <div id="pickerStrip" class="picker-strip" aria-label="How this zoom will look"></div>
+          <div class="picker-actions">
+            <button id="pickerPrevButton" type="button" aria-label="Previous join">‹ Prev</button>
+            <button id="pickerAutoButton" type="button">Use auto spot</button>
+            <button id="pickerPlayButton" type="button">Play this zoom</button>
+            <button id="pickerNextButton" type="button" aria-label="Next join">Next ›</button>
+            <button id="pickerDoneButton" type="button">Done</button>
+          </div>
         </div>
       </section>
 
@@ -75,6 +92,27 @@
         </section>
 
         <section class="panel-section">
+          <h2>Speed &amp; Length</h2>
+
+          <label class="field slider-field">
+            <span>Time per photo <output id="durationReadout" for="durationInput">5.0 s</output></span>
+            <input id="durationInput" type="range" min="1" max="15" step="0.5" value="5" aria-describedby="timingSummary">
+          </label>
+          <p class="hint">How long the zoom takes to travel from one photo into the next. Lower is faster.</p>
+
+          <label class="field">
+            <span>Frame rate</span>
+            <select id="fpsInput">
+              <option value="24">24 fps · film look</option>
+              <option value="30" selected>30 fps · standard</option>
+              <option value="60">60 fps · smoothest</option>
+            </select>
+          </label>
+
+          <p id="timingSummary" class="timing-summary" aria-live="polite"></p>
+        </section>
+
+        <section class="panel-section">
           <h2>Render</h2>
 
           <label class="field">
@@ -87,110 +125,127 @@
           <p id="renderModeHelp" class="upload-help">Hidden photo detail gradually emerges as you zoom.</p>
 
           <label class="field">
-            <span>Canvas</span>
+            <span>Video size</span>
             <select id="sizeInput">
-              <option value="720">720</option>
-              <option value="1080" selected>1080</option>
-              <option value="1440">1440</option>
-              <option value="2160">2160</option>
+              <option value="720">720 · fastest</option>
+              <option value="1080" selected>1080 · recommended</option>
+              <option value="1440">1440 · sharper</option>
+              <option value="2160">2160 · slowest</option>
             </select>
-          </label>
-
-          <label class="field">
-            <span>Frames</span>
-            <input id="framesInput" type="number" min="24" max="240" step="6" value="120">
-          </label>
-
-          <label class="field">
-            <span>FPS</span>
-            <input id="fpsInput" type="number" min="12" max="60" step="1" value="30">
-          </label>
-
-          <label class="field slider-field">
-            <span>Zoom speed</span>
-            <input id="zoomRateInput" type="range" min="25" max="250" value="82">
           </label>
         </section>
 
         <section class="panel-section">
-          <h2>Recursive Portal</h2>
+          <h2>Photo Placement</h2>
+          <p class="hint">Where each next photo hides inside the one before it.</p>
 
           <div class="tool-row">
-            <button id="autoCinematicButton" type="button">Auto Cinematic</button>
             <button id="autoTuneButton" type="button">Auto Tune</button>
-            <button id="smoothDefaultsButton" type="button">Smooth Defaults</button>
-            <button id="portalPickButton" type="button">Pick Portal</button>
-            <button id="portalClearButton" type="button">Clear Pick</button>
+            <button id="autoCinematicButton" type="button">Auto Cinematic</button>
+            <button id="portalPickButton" type="button">Place Manually</button>
+            <button id="portalClearButton" type="button">Use Auto Spot</button>
+            <button id="smoothDefaultsButton" type="button">Reset to Defaults</button>
           </div>
 
           <p id="portalHelp" class="upload-help" aria-live="polite"></p>
           <p id="placementStatus" class="upload-help"></p>
 
           <label class="field toggle-field">
-            <span>Smooth guard</span>
-            <input id="smoothGuardInput" type="checkbox" checked>
-          </label>
-
-          <label class="field toggle-field">
-            <span>Cinematic mode</span>
-            <input id="cinematicModeInput" type="checkbox">
-          </label>
-
-          <label class="field slider-field">
-            <span>Patch size</span>
-            <input id="patchInput" type="range" min="8" max="34" value="8">
-          </label>
-
-          <label class="field toggle-field">
             <span>Auto place</span>
             <input id="autoAnchorInput" type="checkbox" checked>
           </label>
+          <p class="hint">Finds the spot whose colors and texture best match the next photo.</p>
+
+          <label class="field">
+            <span>Match by</span>
+            <select id="matchPriorityInput" aria-describedby="matchPriorityHelp">
+              <option value="balanced">Balanced</option>
+              <option value="lighting">Lighting &amp; color</option>
+              <option value="structure">Texture &amp; lines</option>
+            </select>
+          </label>
+          <p id="matchPriorityHelp" class="hint">Guides Auto place and Auto Sort. Try lighting for skies and shadows, or texture for foliage and architecture.</p>
 
           <label class="field slider-field">
-            <span>Anchor X</span>
+            <span>Start size <output id="patchReadout" for="patchInput"></output></span>
+            <input id="patchInput" type="range" min="8" max="34" value="8">
+          </label>
+          <p class="hint">How big the next photo is when the zoom begins. Smaller hides it better and zooms deeper.</p>
+
+          <label class="field slider-field">
+            <span>Spot across <output id="anchorXReadout" for="anchorXInput"></output></span>
             <input id="anchorXInput" type="range" min="18" max="82" value="52">
           </label>
 
           <label class="field slider-field">
-            <span>Anchor Y</span>
+            <span>Spot down <output id="anchorYReadout" for="anchorYInput"></output></span>
             <input id="anchorYInput" type="range" min="18" max="82" value="48">
           </label>
+          <p class="hint">Fixed spot used for every photo when Auto place is off. Place Manually overrides one join at a time.</p>
+        </section>
+
+        <section class="panel-section">
+          <h2>Blending</h2>
+          <p class="hint">How the next photo melts into its surroundings.</p>
+
+          <label class="field toggle-field">
+            <span>Smooth guard</span>
+            <input id="smoothGuardInput" type="checkbox" checked>
+          </label>
+          <p class="hint">Keeps edges soft and grain low so nothing pops.</p>
 
           <label class="field slider-field">
-            <span>Color bind</span>
+            <span>Color match <output id="bindReadout" for="bindInput"></output></span>
             <input id="bindInput" type="range" min="0" max="100" value="100">
           </label>
+          <p class="hint">How much the next photo takes on the surrounding light and color while it is small.</p>
 
           <label class="field slider-field">
-            <span>Sample blend</span>
+            <span>Color area <output id="sampleBlendReadout" for="sampleBlendInput"></output></span>
             <input id="sampleBlendInput" type="range" min="0" max="100" value="78">
           </label>
+          <p class="hint">How wide an area of the surroundings that color match looks at.</p>
 
           <label class="field slider-field">
-            <span>Edge blend</span>
+            <span>Edge softness <output id="edgeBlendReadout" for="edgeBlendInput"></output></span>
             <input id="edgeBlendInput" type="range" min="0" max="100" value="86">
           </label>
+          <p class="hint">How wide the fade is between the two photos.</p>
 
           <label class="field slider-field">
-            <span>Organic edge</span>
+            <span>Organic edge <output id="shapeMorphReadout" for="shapeMorphInput"></output></span>
             <input id="shapeMorphInput" type="range" min="0" max="100" value="70">
           </label>
+          <p class="hint">How much the edge follows shapes in the pictures instead of a square.</p>
+        </section>
+
+        <details class="panel-section effects-section">
+          <summary><h2>Effects</h2><span class="hint">Photo Blend only</span></summary>
+
+          <label class="field toggle-field">
+            <span>Cinematic reveal</span>
+            <input id="cinematicModeInput" type="checkbox">
+          </label>
+          <p class="hint">Shows the next photo later, with a slower fade in.</p>
 
           <label class="field slider-field">
-            <span>Pixel grain</span>
+            <span>Film grain <output id="grainReadout" for="grainInput"></output></span>
             <input id="grainInput" type="range" min="0" max="100" value="0">
           </label>
+          <p class="hint">Adds grain over the join.</p>
 
           <label class="field slider-field">
-            <span>Symmetry</span>
+            <span>Kaleidoscope <output id="symmetryReadout" for="symmetryInput"></output></span>
             <input id="symmetryInput" type="range" min="1" max="8" value="1">
           </label>
+          <p class="hint">Mirrors the next photo into folds while it is small.</p>
 
           <label class="field slider-field">
-            <span>Alignment</span>
+            <span>Fold angle <output id="alignmentReadout" for="alignmentInput"></output></span>
             <input id="alignmentInput" type="range" min="0" max="360" value="0">
           </label>
-        </section>
+          <p class="hint">Rotates the kaleidoscope folds.</p>
+        </details>
       </aside>
     </main>
 
@@ -209,7 +264,8 @@
       </div>
     </dialog>
 
-    <script src="zoom-renderer.js?v11"></script>
-    <script src="app.js?v11"></script>
+    <script src="vendor/mp4-muxer.js?v12"></script>
+    <script src="zoom-renderer.js?v12"></script>
+    <script src="app.js?v12"></script>
   </body>
 </html>
