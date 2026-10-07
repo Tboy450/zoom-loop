@@ -457,8 +457,8 @@ const server = http.createServer((req, res) => {
     await page.evaluate(() => navigator.serviceWorker.ready);
     await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
     const cacheReady = await page.evaluate(async () => {
-      const cache = await caches.open("zoom-loop-v16");
-      return Boolean(await cache.match("./zoom-renderer.js?v16"));
+      const cache = await caches.open("zoom-loop-v17");
+      return Boolean(await cache.match("./zoom-renderer.js?v17"));
     });
     assert.equal(cacheReady, true);
     await page.context().setOffline(true);

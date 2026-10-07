@@ -295,17 +295,32 @@ const PhotoZoom = (() => {
       full: patchSamples(data, x, y, p), boundary: boundary / (96 * 255) };
   }
 
+  // Spots are judged over at least MIN_MATCH of the photo: a 1% patch is
+  // about ten pixels of the parent, too little to tell whether the next
+  // photo blends in. Each spot also records the light and color of the area
+  // around it that stays on screen while the next photo forms.
+  const MIN_MATCH = 0.06;
+  const CONTEXT = 3;
   function anchorField(parent, p) {
     let field = anchorFields.get(parent);
     if (!field || field.patch !== p) {
       const parentData = analysis(parent);
       const margin = (1 - FRAME) / 2 + p / 2 + 0.05;
-      field = { patch: p, center: anchorCandidate(parentData, 0.5, 0.5, p), grids: [] };
+      const size = Math.max(p, MIN_MATCH);
+      const candidate = (x, y) => {
+        const result = anchorCandidate(parentData, x, y, size);
+        const area = Math.min(0.9, size * CONTEXT);
+        result.context = patchSamples(parentData, x - area / 2, y - area / 2, area).mean;
+        // The 8 x 8 cells of a window 8/6 the spot's size: its outer ring of
+        // cells is the parent just outside the spot, which meets the photo's
+        // edge at the seam.
+        result.ring = patchSamples(parentData, x - size * 2 / 3, y - size * 2 / 3, size * 4 / 3);
+        return result;
+      };
+      field = { patch: p, center: candidate(0.5, 0.5), grids: [], candidate };
       for (const limit of [Math.max(0.32, margin), margin]) {
         const grid = [];
-        for (let y = 0; y < 13; y++) for (let x = 0; x < 13; x++) {
-          grid.push(anchorCandidate(parentData, mix(limit, 1 - limit, x / 12), mix(limit, 1 - limit, y / 12), p));
-        }
+        for (let y = 0; y < 13; y++) for (let x = 0; x < 13; x++) grid.push(candidate(mix(limit, 1 - limit, x / 12), mix(limit, 1 - limit, y / 12)));
         field.grids.push(grid);
       }
       anchorFields.set(parent, field);
@@ -313,14 +328,39 @@ const PhotoZoom = (() => {
     return field;
   }
 
+  // How well a spot suits the next photo, lower being better: the photo
+  // against the spot itself and against the area around it that stays on
+  // screen while it forms, and its edge against what touches it.
+  function spotMatch(candidate, target, settings) {
+    const own = comparePatches(candidate.core, target.core, settings.matchPriority) * 0.65 +
+      comparePatches(candidate.full, target.full, settings.matchPriority) * 0.35 + candidate.boundary * 0.04;
+    const context = candidate.context;
+    const surroundings = Math.abs(target.full.mean[0] - context[0]) * 0.6 +
+      Math.hypot(target.full.mean[1] - context[1], target.full.mean[2] - context[2]) * 0.4;
+    // Seam: each cell along the photo's edge against the parent cell just
+    // outside it, in light and color.
+    let seam = 0, cells = 0;
+    for (let k = 0; k < 8; k++) {
+      for (const [inner, outer] of [[k, k], [56 + k, 56 + k], [k * 8, k * 8], [k * 8 + 7, k * 8 + 7]]) {
+        const a = target.full.values, b = candidate.ring.values;
+        seam += Math.abs(a[inner * 3] - b[outer * 3]) * 0.6 +
+          Math.hypot(a[inner * 3 + 1] - b[outer * 3 + 1], a[inner * 3 + 2] - b[outer * 3 + 2]) * 0.4;
+        cells++;
+      }
+    }
+    // The surroundings fill more of the screen while small photos form.
+    return own + surroundings * SURROUNDINGS_WEIGHT * (1 - smooth(0.03, 0.12, settings.patch)) + seam / cells * SEAM_WEIGHT;
+  }
+  const SURROUNDINGS_WEIGHT = 0.3;
+  const SEAM_WEIGHT = 0.25;
+
   // Match quality across the parent, for showing people where a photo would
   // blend in well. Lower match values are better, as in findAnchor.
   function matchField(parent, child, settings) {
-    const target = photoFeatures(child);
-    return anchorField(parent, settings.patch).grids[1].map(candidate => ({
+    const target = photoFeatures(child), field = anchorField(parent, settings.patch);
+    return field.grids[1].map(candidate => ({
       anchorX: candidate.anchorX, anchorY: candidate.anchorY,
-      match: comparePatches(candidate.core, target.core, settings.matchPriority) * 0.65 +
-        comparePatches(candidate.full, target.full, settings.matchPriority) * 0.35 + candidate.boundary * 0.04
+      match: spotMatch(candidate, target, settings)
     }));
   }
 
@@ -331,24 +371,22 @@ const PhotoZoom = (() => {
     if (!matches) children.set(child, matches = new Map());
     const key = `${settings.patch}:${settings.matchPriority || "balanced"}:${quick}`;
     if (matches.has(key)) return matches.get(key);
-    const parentData = analysis(parent);
     const inset = (1 - FRAME) / 2;
     const target = photoFeatures(child);
     const p = settings.patch;
     // Search inside the visible crop, not the unseen edges of the source.
     const margin = inset + p / 2 + 0.05;
     const centralMargin = Math.max(0.32, margin);
+    const field = anchorField(parent, p);
     const score = candidate => {
-      const match = comparePatches(candidate.core, target.core, settings.matchPriority) * 0.65 +
-        comparePatches(candidate.full, target.full, settings.matchPriority) * 0.35 + candidate.boundary * 0.04;
+      const match = spotMatch(candidate, target, settings);
       return { anchorX: candidate.anchorX, anchorY: candidate.anchorY, match,
         score: match + Math.hypot(candidate.anchorX - 0.5, candidate.anchorY - 0.5) * 0.06 };
     };
-    const field = anchorField(parent, p);
     const search = (limit, grid) => {
       let best = score(field.center);
       const consider = (x, y) => {
-        const candidate = score(anchorCandidate(parentData, clamp(x, limit, 1 - limit), clamp(y, limit, 1 - limit), p));
+        const candidate = score(field.candidate(clamp(x, limit, 1 - limit), clamp(y, limit, 1 - limit)));
         if (candidate.score < best.score) best = candidate;
       };
       for (let i = 0; i < grid.length; i++) {
@@ -391,10 +429,10 @@ const PhotoZoom = (() => {
   function matchPair(parent, child, settings, override, quick = false) {
     if (settings.autoAnchor && !override) return findAnchor(parent, child, settings, quick);
     const point = rect({ ...settings, ...override });
-    const candidate = anchorCandidate(analysis(parent), point.x + point.size / 2, point.y + point.size / 2, point.size);
-    const target = photoFeatures(child);
-    const match = comparePatches(candidate.core, target.core, settings.matchPriority) * 0.65 +
-      comparePatches(candidate.full, target.full, settings.matchPriority) * 0.35 + candidate.boundary * 0.04;
+    // Judged exactly like automatic spots, so the two can be compared.
+    const field = anchorField(parent, settings.patch);
+    const candidate = field.candidate(point.x + point.size / 2, point.y + point.size / 2);
+    const match = spotMatch(candidate, photoFeatures(child), settings);
     return { anchorX: candidate.anchorX, anchorY: candidate.anchorY, match, score: match };
   }
 
