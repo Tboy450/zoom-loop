@@ -38,7 +38,9 @@ const server = http.createServer((req, res) => {
     await page.locator("#fileInput").setInputFiles(photos);
     await page.waitForFunction(count => !state.isLoading && state.images.length === count, photos.length);
     const sort = process.env.ZOOM_SORT === "1";
-    const result = await page.evaluate(async ({ sort }) => {
+    const sheetPatch = Number(process.env.ZOOM_SHEET_PATCH) || 0;
+    const sheetTimes = process.env.ZOOM_SHEET_TIMES ? process.env.ZOOM_SHEET_TIMES.split(",").map(Number) : null;
+    const result = await page.evaluate(async ({ sort, sheetPatch, sheetTimes }) => {
       const size = 480;
       const base = { ...getSettings(), size };
       let order = state.images.map(image => image.name);
@@ -125,7 +127,7 @@ const server = http.createServer((req, res) => {
       setCanvasSize(size);
       const records = [];
       for (const mode of ["blend", "stitched"]) {
-        for (const patch of [0.08, 0.16]) {
+        for (const patch of [0.02, 0.08, 0.16, 0.34]) {
           const settings = { ...base, mode, patch };
           state.portalOverrides.clear(); invalidateTransitions();
           for (let pair = 0; pair < state.images.length; pair++) {
@@ -167,10 +169,10 @@ const server = http.createServer((req, res) => {
       // Contact sheet of the stretch where the join is most visible.
       const sheets = [];
       for (const mode of ["blend", "stitched"]) {
-        const cell = 300, times = [0.45, 0.6, 0.72, 0.82, 0.9];
+        const cell = 300, times = sheetTimes || [0.45, 0.6, 0.72, 0.82, 0.9];
         const sheet = makeCanvas(cell * times.length, cell * state.images.length);
         const ctx = sheet.getContext("2d");
-        const settings = { ...base, mode, size: 600 };
+        const settings = { ...base, mode, size: 600, patch: sheetPatch || base.patch };
         state.portalOverrides.clear(); invalidateTransitions(); setCanvasSize(600);
         state.images.forEach((image, row) => times.forEach((time, col) => {
           drawTransition(image, state.images[(row + 1) % state.images.length], time, settings);
@@ -179,7 +181,7 @@ const server = http.createServer((req, res) => {
         sheets.push({ mode, data: sheet.toDataURL("image/jpeg", 0.9) });
       }
       return { order, records, sheets, timing };
-    }, { sort });
+    }, { sort, sheetPatch, sheetTimes });
     for (const sheet of result.sheets) fs.writeFileSync(path.join(output, `seam-${label}-${sheet.mode}.jpg`), Buffer.from(sheet.data.split(",")[1], "base64"));
     delete result.sheets;
     const summary = {};

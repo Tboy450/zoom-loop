@@ -315,7 +315,7 @@ const server = http.createServer((req, res) => {
     const released = await page.evaluate(() => ["blend", "stitched"].map(mode => {
       const settings = { ...getSettings(), mode };
       const before = getTransition(state.images[0], state.images[1], settings);
-      const owned = mode === "blend" ? [before.texture, before.rim, before.cutout, before.extension] : [before.stitch, before.cutout];
+      const owned = mode === "blend" ? [before.texture, before.cutout, before.extension] : [before.stitch, before.cutout];
       invalidateTransitions();
       const after = getTransition(state.images[0], state.images[1], settings);
       drawTransition(state.images[0], state.images[1], 0.5, settings);
@@ -457,8 +457,8 @@ const server = http.createServer((req, res) => {
     await page.evaluate(() => navigator.serviceWorker.ready);
     await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
     const cacheReady = await page.evaluate(async () => {
-      const cache = await caches.open("zoom-loop-v13");
-      return Boolean(await cache.match("./zoom-renderer.js?v13"));
+      const cache = await caches.open("zoom-loop-v14");
+      return Boolean(await cache.match("./zoom-renderer.js?v14"));
     });
     assert.equal(cacheReady, true);
     await page.context().setOffline(true);

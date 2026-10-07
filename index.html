@@ -10,10 +10,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Zoom Loop">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="manifest.webmanifest?v13">
+    <link rel="manifest" href="manifest.webmanifest?v14">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
-    <link rel="stylesheet" href="styles.css?v13">
+    <link rel="stylesheet" href="styles.css?v14">
   </head>
   <body>
     <main class="app-shell">
@@ -168,9 +168,9 @@
 
           <label class="field slider-field">
             <span>Start size <output id="patchReadout" for="patchInput"></output></span>
-            <input id="patchInput" type="range" min="8" max="34" value="8">
+            <input id="patchInput" type="range" min="1" max="34" value="8">
           </label>
-          <p class="hint">How big the next photo is when the zoom begins. Smaller hides it better and zooms deeper.</p>
+          <p class="hint">How big the next photo is when the zoom begins, from 1% to 34%. Smaller hides it better and zooms deeper.</p>
 
           <label class="field slider-field">
             <span>Spot across <output id="anchorXReadout" for="anchorXInput"></output></span>
@@ -216,7 +216,7 @@
             <span>Organic edge <output id="shapeMorphReadout" for="shapeMorphInput"></output></span>
             <input id="shapeMorphInput" type="range" min="0" max="100" value="70">
           </label>
-          <p class="hint">How much the edge follows shapes in the pictures instead of a square.</p>
+          <p class="hint">How much the next photo grows out of areas that already match, instead of spreading evenly from its middle, and how much its edge follows shapes in the pictures instead of a square.</p>
         </section>
 
         <details class="panel-section effects-section">
@@ -264,8 +264,8 @@
       </div>
     </dialog>
 
-    <script src="vendor/mp4-muxer.js?v13"></script>
-    <script src="zoom-renderer.js?v13"></script>
-    <script src="app.js?v13"></script>
+    <script src="vendor/mp4-muxer.js?v14"></script>
+    <script src="zoom-renderer.js?v14"></script>
+    <script src="app.js?v14"></script>
   </body>
 </html>

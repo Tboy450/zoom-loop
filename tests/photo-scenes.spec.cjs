@@ -35,7 +35,7 @@ const server = http.createServer((req, res) => {
     await page.waitForFunction(count => !state.isLoading && state.images.length === count, photos.length);
     console.log(`Loaded ${photos.length} detailed photos`);
     const profiles = [
-      { name: "default", patch: 0.08 }, { name: "medium", patch: 0.16 }, { name: "large", patch: 0.34 },
+      { name: "default", patch: 0.08 }, { name: "medium", patch: 0.16 }, { name: "large", patch: 0.34 }, { name: "tiny", patch: 0.01 },
       { name: "hard-edge", patch: 0.16, edgeBlend: 0, shapeMorph: 0 },
       { name: "wide-organic", patch: 0.16, edgeBlend: 1, shapeMorph: 1, sampleBlend: 1 },
       { name: "low-binding", patch: 0.08, bind: 0.2, sampleBlend: 0.2 },

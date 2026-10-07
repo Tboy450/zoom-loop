@@ -8,14 +8,17 @@ const PhotoZoom = (() => {
   const SPAN = 1 + HALO * 2;
   const FRAME = 0.8;
   const MAX_LAYER = 4096;
-  // Photo Blend reveal timing, in coverage of the screen (see render). The
-  // middle of a photo reveals over REVEAL_SPAN (a longer, dreamier dissolve
-  // in cinematic mode); its rim, from RIM_START outward, over RIM_SPAN.
-  const REVEAL_SPAN = 0.28;
-  const CINEMATIC_REVEAL_SPAN = 0.5;
-  const RIM_SPAN = 0.74;
-  const RIM_START = 0.22;
-  const LIGHT_DELAY = 0.1;
+  // Photo Blend reveal, as the share of the screen a photo covers. Its form
+  // grows out of matching areas from REVEAL_START to FORM_END; its border
+  // stays softly camouflaged until RIM_END; it is lit like its surroundings
+  // until LIGHT_END. Cinematic mode starts later and dissolves more softly.
+  const REVEAL_START = 0.1;
+  const FORM_END = 0.5;
+  const CINEMATIC_REVEAL_START = 0.14;
+  const CINEMATIC_FORM_END = 0.7;
+  const RIM_END = 0.92;
+  const LIGHT_END = 0.95;
+  const REVEAL_MAP = 128;
   const analysisCache = new WeakMap();
   const extensionCache = new WeakMap();
   const layers = [];
@@ -476,7 +479,10 @@ const PhotoZoom = (() => {
     const radius = Math.round(18 + settings.sampleBlend * 38);
     const parentLow = lowPass(parentData, radius);
     const childLow = lowPass(childData, radius);
+    const parentMid = lowPass(parentData, 14);
+    const childMid = lowPass(childData, 14);
     const lighting = createLighting(parentLow, childLow, settings);
+    const order = createRevealOrder(parentMid, childMid, settings);
     const texture = canvas(TEXTURE_SIZE);
     const ctx = texture.getContext("2d");
     const embedded = ctx.createImageData(TEXTURE_SIZE, TEXTURE_SIZE);
@@ -528,20 +534,10 @@ const PhotoZoom = (() => {
     }
     ctx.putImageData(embedded, 0, 0);
     cutoutCtx.putImageData(mask, 0, 0);
-    // The same camouflage, transparent in the middle of the photo. It keeps
-    // the photo's edge hidden on the slow schedule while the middle shows.
-    const rim = canvas(TEXTURE_SIZE);
-    const rimCtx = rim.getContext("2d");
-    for (let y = 0; y < TEXTURE_SIZE; y++) {
-      for (let x = 0; x < TEXTURE_SIZE; x++) {
-        const u = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO, v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
-        embedded.data[(y * TEXTURE_SIZE + x) * 4 + 3] = 255 * smooth(RIM_START, 0.5, Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5)));
-      }
-    }
-    rimCtx.putImageData(embedded, 0, 0);
-    const surround = createSurround(parentData, childData, settings, { radius, parent: parentLow, child: childLow });
-    return { settings, rect: portal, texture, rim, cutout, extension: surround, placement, lighting,
-      release: () => releaseCanvases(texture, rim, cutout, surround, lighting?.darken, lighting?.brighten, lighting?.lift) };
+    const surround = createSurround(parentData, childData, settings,
+      { parent: parentLow, child: childLow, parentMid, childMid });
+    return { settings, rect: portal, texture, cutout, extension: surround, placement, lighting, order,
+      release: () => releaseCanvases(texture, cutout, surround, lighting?.darken, lighting?.brighten, lighting?.lift) };
   }
 
   function createLighting(parentLow, childLow, settings) {
@@ -586,15 +582,100 @@ const PhotoZoom = (() => {
     return { darken: maps[0], brighten: maps[1], lift: maps[2], strength: 0.9 * settings.bind };
   }
 
+  function blurMap(values, size, radius) {
+    const out = new Float32Array(values.length), temp = new Float32Array(values.length);
+    for (const [from, to, horizontal] of [[values, temp, true], [temp, out, false]]) {
+      for (let line = 0; line < size; line++) {
+        let sum = 0;
+        const at = i => from[horizontal ? line * size + clamp(i, 0, size - 1) : clamp(i, 0, size - 1) * size + line];
+        for (let k = -radius; k <= radius; k++) sum += at(k);
+        for (let i = 0; i < size; i++) {
+          to[horizontal ? line * size + i : i * size + line] = sum / (radius * 2 + 1);
+          sum += at(i + radius + 1) - at(i - radius);
+        }
+      }
+    }
+    return out;
+  }
+
+  // When each part of an incoming photo stops being camouflaged, from 0
+  // (first) to 1 (last). Parts that already match the surrounding color and
+  // light come first, so the photo forms out of its environment as blobs
+  // that grow together. Organic edge sets how much the order follows the
+  // match rather than spreading evenly outward from the middle. The border
+  // is handled separately by a soft rim (see drawCamouflage).
+  function createRevealOrder(parentMid, childMid, settings) {
+    const size = REVEAL_MAP;
+    const mismatch = new Float32Array(size * size);
+    const distance = new Float32Array(size * size);
+    const inside = [];
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const i = y * size + x;
+        const u = (x + 0.5) / size * SPAN - HALO, v = (y + 0.5) / size * SPAN - HALO;
+        distance[i] = Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5));
+        const k = (Math.floor((y + 0.5) / size * TEXTURE_SIZE) * TEXTURE_SIZE + Math.floor((x + 0.5) / size * TEXTURE_SIZE)) * 3;
+        mismatch[i] = (Math.abs(childMid[k] - parentMid[k]) * 0.3 + Math.abs(childMid[k + 1] - parentMid[k + 1]) * 0.5 +
+          Math.abs(childMid[k + 2] - parentMid[k + 2]) * 0.2) / 255;
+        if (distance[i] < 0.5) inside.push(i);
+      }
+    }
+    // Coherent regions about a twentieth of the photo across, not speckle.
+    const regions = blurMap(mismatch, size, 3);
+    inside.sort((a, b) => regions[a] - regions[b]);
+    const rank = new Float32Array(size * size);
+    inside.forEach((i, n) => { rank[i] = n / Math.max(1, inside.length - 1); });
+    const order = new Float32Array(size * size).fill(1);
+    for (const i of inside) order[i] = mix(distance[i] / 0.5, rank[i], settings.shapeMorph);
+    return { order: blurMap(order, size, 1), distance };
+  }
+
+  let revealMask, revealMaskImage, revealScratch;
+  // Draws the camouflage where the photo has not formed yet. Inside, the
+  // edge between the two is a soft moving threshold, so each part shows one
+  // photo or the other rather than both at half strength. Toward the border
+  // the camouflage fades gradually in space and late in time; a threshold
+  // there drew a crisp square while the photo was still small.
+  function drawCamouflage(local, incoming, form, rim, softness, x, y, span) {
+    if (form >= 1 && rim >= 1) return;
+    if (!incoming.order || (form <= 0 && rim <= 0)) {
+      local.globalAlpha = 1 - Math.max(0, Math.min(form, rim));
+      local.drawImage(incoming.texture, x, y, span, span);
+      local.globalAlpha = 1;
+      return;
+    }
+    if (!revealMask) {
+      revealMask = canvas(REVEAL_MAP);
+      revealMaskImage = revealMask.getContext("2d").createImageData(REVEAL_MAP, REVEAL_MAP);
+      revealScratch = canvas(TEXTURE_SIZE);
+    }
+    const low = form * (1 + 2 * softness) - 2 * softness, data = revealMaskImage.data;
+    const { order, distance } = incoming.order;
+    for (let i = 0; i < order.length; i++) {
+      const inner = smooth(low, low + 2 * softness, order[i]);
+      const border = smooth(0.22, 0.5, distance[i]) * (1 - rim);
+      data[i * 4 + 3] = 255 * Math.max(inner, border);
+    }
+    revealMask.getContext("2d").putImageData(revealMaskImage, 0, 0);
+    const scratch = revealScratch.getContext("2d");
+    scratch.globalCompositeOperation = "copy";
+    scratch.drawImage(incoming.texture, 0, 0);
+    scratch.globalCompositeOperation = "destination-in";
+    scratch.imageSmoothingEnabled = true;
+    scratch.drawImage(revealMask, 0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
+    scratch.globalCompositeOperation = "source-over";
+    local.drawImage(revealScratch, x, y, span, span);
+  }
+
   function createSurround(parent, child, settings, broad) {
     // Backing for a growing photo: the photo itself inside its edge, then a
     // multiband handoff to the parent's own material. Fine texture switches
     // to the parent almost at the edge, while lighting and color grade over
     // the whole feather, so the join shows neither a blur ring nor mirrored
-    // copies of the incoming photo. The broadest band reuses the blur the
-    // color match already computed.
-    const parentBands = [lowPass(parent, 3), lowPass(parent, Math.min(14, broad.radius)), broad.parent];
-    const childBands = [lowPass(child, 3), lowPass(child, Math.min(14, broad.radius)), broad.child];
+    // copies of the incoming photo. The two broader bands reuse blurs the
+    // color match and reveal order already computed.
+    const parentBands = [lowPass(parent, 3), broad.parentMid, broad.parent];
+    const childBands = [lowPass(child, 3), broad.childMid, broad.child];
     const [r0, r1, r2, r3] = [0.03, 0.08, 0.18, mix(0.32, 0.5, settings.edgeBlend)];
     const result = canvas(TEXTURE_SIZE);
     const ctx = result.getContext("2d");
@@ -780,18 +861,19 @@ const PhotoZoom = (() => {
       const insetX = core * HALO + shiftX, insetY = core * HALO + shiftY;
       const coverage = projectedSize / outputSize;
       const stitched = settings.mode === "stitched";
-      // Photo Blend reveals in two stages. The camouflage, which carries the
-      // parent's structure, gives way while the photo is still small; a long
-      // crossfade of two structures read as a double exposure. The photo's
-      // own detail then shows lit like its surroundings, and its true
-      // lighting returns well before it fills the screen, so the handoff to
-      // the next segment stays pixel-identical.
-      const revealStart = incoming.settings.cinematicMode ? 0.2 : 0.16;
-      const reveal = stitched ? 1 : smooth(revealStart, revealStart +
-        (incoming.settings.cinematicMode ? CINEMATIC_REVEAL_SPAN : REVEAL_SPAN), coverage);
-      const rimReveal = stitched ? 1 : smooth(revealStart, revealStart + RIM_SPAN, coverage);
+      // Photo Blend: at first the photo is only its color and light inside the
+      // parent's texture. Its own form then grows out of the areas that
+      // already match, and the square border forms last. Meanwhile it is lit
+      // like its surroundings, returning to its true light before it fills
+      // the screen, so the handoff to the next segment stays pixel-identical.
+      // Timing follows the zoom (log of coverage), so pacing is even.
+      const cinematic = incoming.settings.cinematicMode;
+      const zoomed = Math.log(Math.max(coverage, 1e-6));
+      const revealStart = cinematic ? CINEMATIC_REVEAL_START : REVEAL_START;
+      const form = stitched ? 1 : smooth(Math.log(revealStart), Math.log(cinematic ? CINEMATIC_FORM_END : FORM_END), zoomed);
+      const rim = stitched ? 1 : smooth(revealStart, RIM_END, coverage);
       const lit = stitched || !incoming.lighting ? 0 :
-        incoming.lighting.strength * (1 - smooth(revealStart + LIGHT_DELAY, 0.9, coverage));
+        incoming.lighting.strength * (1 - smooth(Math.log(revealStart * 2), Math.log(LIGHT_END), zoomed));
       local.clearRect(0, 0, layer.width, layer.height);
       local.imageSmoothingEnabled = true;
       // Bilinear filtering stays consistent when a photo crosses 1:1 scale.
@@ -800,11 +882,27 @@ const PhotoZoom = (() => {
       // Blend broad color and fine detail separately: an abrupt change from
       // a sharp photograph to a soft extension would itself reveal a box.
       local.drawImage(incoming.extension, shiftX, shiftY, span, span);
+      const drawNested = () => {
+        const nextSize = projectedSize * settings.patch;
+        // Recursion ends below pixel visibility, independently of photo count.
+        // The fade also makes changing the depth limit invisible while zooming.
+        if (nextSize > 0.5 && depth < 12) {
+          const next = pairAt(index);
+          const child = nested(index + 1, next, nextSize, depth + 1,
+            insetX + (next.rect.x - next.rect.size * HALO) * core, insetY + (next.rect.y - next.rect.size * HALO) * core, globalX, globalY);
+          local.globalAlpha = smooth(0.5, 1.5, nextSize);
+          local.drawImage(child.layer, 0, 0, child.size, child.size, child.x, child.y, child.size, child.size);
+          local.globalAlpha = 1;
+        }
+      };
       if (stitched) {
         drawProjectedPhoto(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize);
         local.drawImage(incoming.stitch, shiftX, shiftY, span, span);
+        drawNested();
       } else {
         drawPhotoDetail(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize);
+        // Nested photos belong to this one: lit and camouflaged with it.
+        drawNested();
         if (lit > 0.004) {
           local.globalAlpha = lit;
           local.globalCompositeOperation = "multiply";
@@ -814,26 +912,9 @@ const PhotoZoom = (() => {
           local.globalCompositeOperation = "screen";
           local.drawImage(incoming.lighting.lift, shiftX, shiftY, span, span);
           local.globalCompositeOperation = "source-over";
+          local.globalAlpha = 1;
         }
-        local.globalAlpha = 1 - reveal;
-        local.drawImage(incoming.texture, shiftX, shiftY, span, span);
-        if (rimReveal < 1 && incoming.rim) {
-          local.globalAlpha = 1 - rimReveal;
-          local.drawImage(incoming.rim, shiftX, shiftY, span, span);
-        }
-      }
-      local.globalAlpha = 1;
-
-      const nextSize = projectedSize * settings.patch;
-      // Recursion ends below pixel visibility, independently of photo count.
-      // The fade also makes changing the depth limit invisible while zooming.
-      if (nextSize > 0.5 && depth < 12) {
-        const next = pairAt(index);
-        const child = nested(index + 1, next, nextSize, depth + 1,
-          insetX + (next.rect.x - next.rect.size * HALO) * core, insetY + (next.rect.y - next.rect.size * HALO) * core, globalX, globalY);
-        local.globalAlpha = smooth(0.5, 1.5, nextSize) * reveal;
-        local.drawImage(child.layer, 0, 0, child.size, child.size, child.x, child.y, child.size, child.size);
-        local.globalAlpha = 1;
+        drawCamouflage(local, incoming, form, rim, cinematic ? 0.14 : 0.07, shiftX, shiftY, span);
       }
 
       // Feather only the extension. It leaves the viewport naturally; making

@@ -90,7 +90,7 @@ Use the timeline slider along the bottom to scrub through the loop by hand. The 
 `Mode`
 Choose `Photo Blend` for a concealed image whose detail gradually emerges, or `Stitched World` for a fixed nested scene.
 
-Photo Blend reveals each photo in two stages. While it is small, it is camouflaged in the surrounding texture; its middle then shows its own detail early, while its edge stays camouflaged longer, so the join neither shows as a box nor as a long double exposure. As it grows, the photo is lit like the area around it (a soft per-region color and brightness match) and returns to its true lighting before it fills the screen. Around every embedded photo, fine texture switches to the surrounding photo's own material right at the edge while light and color blend over a wider area, so there is no blurred ring, streaks, or mirrored copy. Stitched World prepares each join locally before playback, blending fine detail across a narrow region and lighting/color across a wider region. Photos and joins stay fixed while the camera zooms; there is no time-dependent reveal. Only the supplied photos are used, and nothing is sent to a generation service.
+Photo Blend grows each photo out of its surroundings. When it first appears it is only its color and light inside the surrounding texture. Its own form then grows as soft blobs out of the areas that already match the surroundings in color and light, spreading until they join; its border stays softly camouflaged until the photo nearly fills the screen, so it becomes a square only at the very end. Each part shows one photo or the other, never both at half strength. Meanwhile the photo is lit like the area around it (a soft per-region color and brightness match) and returns to its true lighting before it fills the screen. Around every embedded photo, fine texture switches to the surrounding photo's own material right at the edge while light and color blend over a wider area, so there is no blurred ring, streaks, or mirrored copy. Stitched World prepares each join locally before playback, blending fine detail across a narrow region and lighting/color across a wider region. Photos and joins stay fixed while the camera zooms; there is no time-dependent reveal. Only the supplied photos are used, and nothing is sent to a generation service.
 
 Stitched World works best when neighboring photos share textures, colors, or composition. Its organic seam follows a closed path through regions with lower detail and color mismatch. Fine detail returns to the parent's material outside the inserted photo, while lighting blends across a wider area, reducing long streaks from stretched edges. Different subjects can still look like a collage; local blending cannot invent connecting scenery. Use `Auto Tune` to arrange photos and choose insertion points, then `Place Manually` to refine individual joins. Cinematic reveal, grain, symmetry, and alignment are available in Photo Blend only.
 
@@ -138,10 +138,10 @@ Removes the picked point for the current join and goes back to `Auto place` or t
 Softens extreme slider combinations. Leave this on for cleaner transitions, or turn it off when you want harsher pixel or symmetry effects.
 
 `Cinematic reveal` (under `Effects`)
-Keeps the parent texture and color longer before the child photo emerges, with a slower, dreamier dissolve. Both modes use continuous zoom motion and restore the original photo colors at the handoff.
+Keeps the parent texture and color longer before the child photo emerges, with a slower growth and softer, dreamier edges. Both modes use continuous zoom motion and restore the original photo colors at the handoff.
 
 `Start size`
-How large the next photo is inside the current one when its zoom begins. Smaller hides it better and zooms deeper.
+How large the next photo is inside the current one when its zoom begins, from 1% to 34%. Smaller hides it better and zooms deeper. In the placement editor, a box too small to see is drawn larger and labelled `shown larger`.
 
 `Auto place`
 Compares color, texture, and edge direction at two scales, emphasizing the central crop of the next photo that will actually be visible. It also checks contrast around the insertion boundary and camera travel. Candidates stay inside the visible source crop, with room for the photo's size. The best central candidate wins unless an off-center candidate reduces the visual mismatch by at least 20% and an absolute score margin. On ambiguous or featureless photos, it favors staying centered.
@@ -164,7 +164,7 @@ Changes the scale used to separate photo detail from lighting and color during t
 Controls the feather outside the embedded photo. The extension softens into the surrounding pixels and moves out of view during the zoom, without turning into an opaque square.
 
 `Organic edge`
-Varies the feather along the surrounding texture to reduce a regular geometric outline. It does not distort the photo itself.
+In Photo Blend, sets how much the next photo grows out of areas that already match its surroundings (high) rather than spreading evenly from its middle (low). It also varies the feather along the surrounding texture to reduce a regular geometric outline. It does not distort the photo itself.
 
 ## Effects
 

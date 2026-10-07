@@ -79,7 +79,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v13";
+const ASSET_VERSION = "v14";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -1252,7 +1252,9 @@ function getPickSpot(current, settings) {
 }
 
 function drawPickBox(ctx, image, anchorX, anchorY, settings, geometry, style) {
-  const box = settings.patch * SOURCE_SIZE * geometry.scale;
+  // Very small start sizes still get a box big enough to see and drag.
+  const actual = settings.patch * SOURCE_SIZE * geometry.scale;
+  const box = Math.max(actual, previewCanvas.width * 0.045);
   const x = (anchorX * SOURCE_SIZE - geometry.viewX) * geometry.scale - box / 2;
   const y = (anchorY * SOURCE_SIZE - geometry.viewY) * geometry.scale - box / 2;
   const line = Math.max(2, previewCanvas.width * 0.003);
@@ -1268,16 +1270,17 @@ function drawPickBox(ctx, image, anchorX, anchorY, settings, geometry, style) {
   ctx.setLineDash(style.dashed ? [line * 3, line * 2] : []);
   ctx.strokeRect(x - line / 2, y - line / 2, box + line, box + line);
   if (style.label) {
+    const label = box > actual + 0.5 ? `${style.label} · shown larger` : style.label;
     const font = Math.max(12, previewCanvas.width * 0.022);
     ctx.font = `700 ${font}px system-ui, sans-serif`;
-    const width = ctx.measureText(style.label).width + font;
+    const width = ctx.measureText(label).width + font;
     const labelY = y - font * 1.7 > 0 ? y - font * 1.6 : y + box + font * 0.3;
     ctx.fillStyle = "rgba(16, 17, 18, 0.82)";
     ctx.fillRect(x + box / 2 - width / 2, labelY, width, font * 1.35);
     ctx.fillStyle = style.color;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(style.label, x + box / 2, labelY + font * 0.7);
+    ctx.fillText(label, x + box / 2, labelY + font * 0.7);
   }
   ctx.restore();
 }
