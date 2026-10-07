@@ -81,7 +81,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v17";
+const ASSET_VERSION = "v18";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -802,6 +802,41 @@ function drawPhotoFrame(ctx, source, width, height, framing) {
   ctx.restore();
 }
 
+// Sharp crops of a photo's original around the spot the next photo zooms
+// into. The app works from a 1024 x 1024 copy, which turns soft when small
+// start sizes magnify it up to 100x. A wider and a closer crop, each aligned
+// with the working copy (framing and rotation included), let the renderer
+// show the original's detail there. Null when there is no original or it is
+// no sharper than the working copy (the Sample Set).
+const DETAIL_LEVELS = [{ size: 0.3, pixels: 768 }, { size: 0.1, pixels: 512 }];
+async function buildPhotoDetail(image, centerX, centerY) {
+  if (!image.sourceBlob) return null;
+  const source = await loadPhotoSource(image.sourceBlob);
+  try {
+    const framing = image.framing || { x: 0.5, y: 0.5, zoom: 1, rotation: 0 };
+    const turned = framing.rotation % 180 !== 0;
+    // Pixels of the original across the whole working square.
+    const side = Math.min(turned ? source.height : source.width, turned ? source.width : source.height) / framing.zoom;
+    const crops = [];
+    for (const level of DETAIL_LEVELS) {
+      const pixels = Math.round(Math.min(level.pixels, side * level.size));
+      // Only worth it when the original is clearly sharper there.
+      if (pixels < SOURCE_SIZE * level.size * 1.25) continue;
+      const x = clamp(centerX - level.size / 2, 0, 1 - level.size);
+      const y = clamp(centerY - level.size / 2, 0, 1 - level.size);
+      const canvas = makeCanvas(pixels, pixels);
+      const ctx = canvas.getContext("2d");
+      const whole = pixels / level.size;
+      ctx.translate(-x * whole, -y * whole);
+      drawPhotoFrame(ctx, source, whole, whole, framing);
+      crops.push({ x, y, size: level.size, canvas });
+    }
+    return crops.length ? crops : null;
+  } finally {
+    source.dispose();
+  }
+}
+
 function getPhotoFraming() {
   return { x: Number(frameXInput.value) / 100, y: Number(frameYInput.value) / 100,
     zoom: Number(frameZoomInput.value) / 100, rotation: frameSession.rotation };
@@ -897,6 +932,7 @@ function applyPhotoFraming() {
     drawPhotoFrame(canvas.getContext("2d", { alpha: false }), source, SOURCE_SIZE, SOURCE_SIZE, framing);
     const url = createThumbnailUrl(canvas);
     if (photo.url.startsWith("blob:")) URL.revokeObjectURL(photo.url);
+    releaseSharpCrops(photo);
     photo.canvas = canvas;
     photo.url = url;
     photo.framing = framing;
@@ -916,6 +952,7 @@ function removeImage(index) {
   if (isBusy()) return;
   const [image] = state.images.splice(index, 1);
   if (image?.url?.startsWith("blob:")) URL.revokeObjectURL(image.url);
+  releaseSharpCrops(image);
   purgePortalOverrides();
   invalidateTransitions();
   renderImageList();
@@ -927,6 +964,7 @@ function clearImages() {
   if (isBusy()) return;
   state.images.forEach((image) => {
     if (image.url.startsWith("blob:")) URL.revokeObjectURL(image.url);
+    releaseSharpCrops(image);
   });
   state.images = [];
   invalidateTransitions();
@@ -1000,13 +1038,64 @@ function syncPlaybackUi() {
 }
 
 async function prepareTransitions(settings, signal) {
+  // Let a background crop run finish, so no photo starts with crops pending.
+  while (sharpCropsRun) await sharpCropsRun;
   for (let index = 0; index < state.images.length; index++) {
     if (signal?.aborted) return;
     statusText.textContent = `Preparing ${settings.mode === "stitched" ? "stitches" : "photos"} ${index + 1} of ${state.images.length}`;
     await new Promise((resolve) => setTimeout(resolve, 0));
     if (signal?.aborted) return;
-    getTransition(state.images[index], state.images[(index + 1) % state.images.length], settings);
+    const from = state.images[index], to = state.images[(index + 1) % state.images.length];
+    await prepareSharpCrops(from, to, settings);
+    if (signal?.aborted) return;
+    getTransition(from, to, settings);
   }
+}
+
+// Cuts sharp crops of `from`'s original around the spot `to` zooms into,
+// unless they already exist for that spot (see buildPhotoDetail).
+async function prepareSharpCrops(from, to, settings) {
+  if (!from.sourceBlob) return false;
+  const spot = PhotoZoom.matchPair(from.canvas, to.canvas, settings, getPortalOverride(from.id, to.id));
+  const key = `${spot.anchorX.toFixed(3)},${spot.anchorY.toFixed(3)}`;
+  if (from.detailKey === key) return false;
+  from.detailKey = key;
+  try {
+    const crops = await buildPhotoDetail(from, spot.anchorX, spot.anchorY);
+    // The spot may have moved again while the original was decoding.
+    if (from.detailKey !== key) return false;
+    PhotoZoom.setDetail(from.canvas, crops);
+    return Boolean(crops);
+  } catch {
+    from.detailKey = null;
+    return false;
+  }
+}
+
+// When the preview is scrubbed without preparing, cut crops in the
+// background and redraw once they are ready.
+let sharpCropsRun = null;
+function scheduleSharpCrops() {
+  if (sharpCropsRun || state.images.length < 2) return;
+  sharpCropsRun = (async () => {
+    let changed = false;
+    try {
+      const settings = getSettings();
+      for (let index = 0; index < state.images.length; index++) {
+        const from = state.images[index], to = state.images[(index + 1) % state.images.length];
+        if (from && to && await prepareSharpCrops(from, to, settings)) changed = true;
+      }
+    } finally {
+      sharpCropsRun = null;
+    }
+    if (changed && !state.isPlaying && !isBusy()) drawCurrentFrame();
+  })();
+}
+
+function releaseSharpCrops(image) {
+  if (!image) return;
+  PhotoZoom.setDetail(image.canvas, null);
+  image.detailKey = null;
 }
 
 async function togglePlayback() {
@@ -1709,6 +1798,7 @@ function updatePlacementStatus(current, settings) {
 function drawLoopFrame(progress) {
   const settings = getSettings();
   setCanvasSize(settings.size);
+  if (!state.isRecording) scheduleSharpCrops();
   const picking = state.isPickingPortal && !state.isRecording && state.images.length >= 2;
   const current = picking ? getPickCurrent() : getCurrentLoopSegment(progress);
   if (!state.pickDrag) updatePlacementStatus(current, settings);
@@ -2003,7 +2093,10 @@ async function openProject(file) {
     }
     const portals = new Map(project.portals.map(point => [getPairKey(loaded[point.from].id, loaded[point.to].id),
       { anchorX: point.anchorX, anchorY: point.anchorY }]));
-    state.images.forEach(image => { if (image.url.startsWith("blob:")) URL.revokeObjectURL(image.url); });
+    state.images.forEach(image => {
+      if (image.url.startsWith("blob:")) URL.revokeObjectURL(image.url);
+      releaseSharpCrops(image);
+    });
     state.images = loaded;
     state.portalOverrides = portals;
     state.progress = project.progress;

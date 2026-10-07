@@ -10,6 +10,10 @@
 //              high while ordinary texture averages out
 //   detailJump: how much sharper the inside of that border is than the
 //              outside (a crisp photo inside a soft, magnified scene)
+//   zoomDetail: fine detail in the magnified photo around the incoming one
+//              (higher is sharper); with ZOOM_NO_CROPS=1 the sharp crops
+//              from the originals are left out, for comparison
+// ZOOM_SIZE sets the measuring size (default 480).
 // ZOOM_PATCHES picks start sizes (default 0.02,0.08,0.16,0.34). Contact
 // sheets show ZOOM_SHEET_COVERAGE, the share of the screen the incoming
 // photo covers, so different start sizes show comparable stages.
@@ -53,8 +57,17 @@ const server = http.createServer((req, res) => {
     const modes = (process.env.ZOOM_MODES || "blend,stitched").split(",");
     // Extra settings as JSON, such as {"pixelReveal":1}.
     const extra = process.env.ZOOM_SETTINGS ? JSON.parse(process.env.ZOOM_SETTINGS) : {};
-    const result = await page.evaluate(async ({ sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes, extra }) => {
-      const size = 480;
+    const result = await page.evaluate(async ({ sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes, extra, measureSize, crops }) => {
+      const size = measureSize;
+      // Cut sharp crops for each join as "Preparing" does (newer versions).
+      const prepareCrops = async settings => {
+        if (typeof prepareSharpCrops !== "function") return;
+        while (sharpCropsRun) await sharpCropsRun;
+        for (const [pair, image] of state.images.entries()) {
+          if (crops) await prepareSharpCrops(image, state.images[(pair + 1) % state.images.length], settings);
+          else releaseSharpCrops(image);
+        }
+      };
       const base = { ...getSettings(), size, ...extra };
       let order = state.images.map(image => image.name);
       if (sort) {
@@ -140,6 +153,19 @@ const server = http.createServer((req, res) => {
             }
           }
         }
+        // Fine detail of the magnified photo outside the incoming one's band.
+        let zoomSum = 0, zoomCount = 0;
+        const luma = i => data[i] * 0.2126 + data[i + 1] * 0.7152 + data[i + 2] * 0.0722;
+        for (let y = 1; y < size - 1; y += 2) {
+          for (let x = 1; x < size - 1; x += 2) {
+            const d = Math.max(Math.abs((x + 0.5 - x0) / side - 0.5), Math.abs((y + 0.5 - y0) / side - 0.5));
+            if (d < 0.55) continue;
+            const i = (y * size + x) * 4;
+            zoomSum += Math.abs(4 * luma(i) - luma(i - 4) - luma(i + 4) - luma(i - size * 4) - luma(i + size * 4));
+            zoomCount++;
+          }
+        }
+        const zoomDetail = zoomCount > 500 ? zoomSum / zoomCount : null;
         const jumps = segments.filter(s => s.inside[3] > 20 && s.outside[3] > 20)
           .map(s => Math.hypot(...[0, 1, 2].map(c => s.inside[c] / s.inside[3] - s.outside[c] / s.outside[3])) / 255);
         const squareEdge = jumps.length >= 6 ? jumps.reduce((sum, jump) => sum + jump, 0) / jumps.length : null;
@@ -164,7 +190,7 @@ const server = http.createServer((req, res) => {
         }
         return sectors ? { colorStep: colorStep / sectors, detailDip: detailDip / sectors, streak: streak / sectors,
           ghost: ghostScore(data, from, to, camera, x0, y0, side), rimGhost: ghostScore(data, from, to, camera, x0, y0, side, [0.38, 0.5]),
-          squareEdge, detailJump } : null;
+          squareEdge, detailJump, zoomDetail } : null;
       };
       setCanvasSize(size);
       const records = [];
@@ -172,6 +198,7 @@ const server = http.createServer((req, res) => {
         for (const patch of patches) {
           const settings = { ...base, mode, patch };
           state.portalOverrides.clear(); invalidateTransitions();
+          await prepareCrops(settings);
           for (let pair = 0; pair < state.images.length; pair++) {
             const pairScores = [];
             for (const coverage of [0.15, 0.25, 0.4, 0.55, 0.7, 0.85]) {
@@ -181,7 +208,7 @@ const server = http.createServer((req, res) => {
             }
             const mean = key => { const values = pairScores.map(s => s[key]).filter(value => value !== null);
               return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length); };
-            records.push({ mode, patch, pair, colorStep: mean("colorStep"), detailDip: mean("detailDip"), streak: mean("streak"), ghost: mean("ghost"), rimGhost: mean("rimGhost"), squareEdge: mean("squareEdge"), detailJump: mean("detailJump") });
+            records.push({ mode, patch, pair, colorStep: mean("colorStep"), detailDip: mean("detailDip"), streak: mean("streak"), ghost: mean("ghost"), rimGhost: mean("rimGhost"), squareEdge: mean("squareEdge"), detailJump: mean("detailJump"), zoomDetail: mean("zoomDetail") });
           }
           await new Promise(resolve => setTimeout(resolve, 0));
         }
@@ -217,6 +244,7 @@ const server = http.createServer((req, res) => {
         const ctx = sheet.getContext("2d");
         const settings = { ...base, mode, size: 600, patch: sheetPatch || base.patch };
         state.portalOverrides.clear(); invalidateTransitions(); setCanvasSize(600);
+        await prepareCrops(settings);
         const count = state.images.length;
         state.images.forEach((image, row) => times.forEach((value, col) => {
           let segment = row, time = value;
@@ -233,18 +261,18 @@ const server = http.createServer((req, res) => {
         sheets.push({ mode, data: sheet.toDataURL("image/jpeg", 0.9) });
       }
       return { order, records, sheets, timing };
-    }, { sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes, extra });
+    }, { sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes, extra, measureSize: Number(process.env.ZOOM_SIZE) || 480, crops: !process.env.ZOOM_NO_CROPS });
     for (const sheet of result.sheets) fs.writeFileSync(path.join(output, `seam-${label}-${sheet.mode}.jpg`), Buffer.from(sheet.data.split(",")[1], "base64"));
     delete result.sheets;
     const summary = {};
     for (const record of result.records) {
       const key = `${record.mode}@${record.patch}`;
-      summary[key] ||= { colorStep: 0, detailDip: 0, streak: 0, ghost: 0, rimGhost: 0, squareEdge: 0, detailJump: 0, n: 0 };
-      for (const metric of ["colorStep", "detailDip", "streak", "ghost", "rimGhost", "squareEdge", "detailJump"]) summary[key][metric] += record[metric];
+      summary[key] ||= { colorStep: 0, detailDip: 0, streak: 0, ghost: 0, rimGhost: 0, squareEdge: 0, detailJump: 0, zoomDetail: 0, n: 0 };
+      for (const metric of ["colorStep", "detailDip", "streak", "ghost", "rimGhost", "squareEdge", "detailJump", "zoomDetail"]) summary[key][metric] += record[metric];
       summary[key].n++;
     }
     for (const value of Object.values(summary)) {
-      for (const metric of ["colorStep", "detailDip", "streak", "ghost", "rimGhost", "squareEdge", "detailJump"]) value[metric] = +(value[metric] / value.n).toFixed(4);
+      for (const metric of ["colorStep", "detailDip", "streak", "ghost", "rimGhost", "squareEdge", "detailJump", "zoomDetail"]) value[metric] = +(value[metric] / value.n).toFixed(4);
       delete value.n;
     }
     fs.writeFileSync(path.join(output, `seam-quality-${label}.json`), JSON.stringify({ ...result, summary, errors }, null, 2));

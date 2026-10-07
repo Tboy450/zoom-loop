@@ -6,20 +6,21 @@ Work in progress, in order. Each finished item is tested and pushed live before 
 
 At 1-3% start sizes the old photo is magnified up to 100x, and the app keeps only a 1024 x 1024 working copy, so the last stretch of every transition turns soft. Uploaded photos still have their full-resolution originals.
 
-- [ ] 1.1 Sharp crops from the original photo
-  - [ ] Cut two crops around the spot the next photo zooms into (a wider one and a close one), aligned exactly with the working copy, including framing and rotation
-  - [ ] Decode the original once per crop set and release it straight away
-  - [ ] Fall back to the working copy when there is no original (Sample Set) or it is no larger
-  - [ ] Test: the crops line up with the working copy to within a fraction of a pixel
-- [ ] 1.2 Draw the crops while zooming
-  - [ ] Show a crop only once the photo is magnified enough to look soft, fading it in gradually
-  - [ ] Feather its edges, so sharpness changes smoothly rather than as a box
-  - [ ] Same drawing for a photo on its own and nested inside another, so handoffs stay pixel-identical
-  - [ ] Test: handoffs unchanged; no visible jump when a crop fades in
-- [ ] 1.3 Prepare crops with the joins
-  - [ ] Find each spot, build its crops, then prepare the join, all during "Preparing"
-  - [ ] When scrubbing without preparing, build crops in the background and redraw
-  - [ ] Free crops when a spot moves or photos change
+- [x] 1.1 Sharp crops from the original photo
+  - [x] Cut two crops around the spot the next photo zooms into (a wider one and a close one), aligned exactly with the working copy, including framing and rotation
+  - [x] Decode the original once per crop set and release it straight away
+  - [x] Fall back to the working copy when there is no original (Sample Set) or it is no larger
+  - [x] Test: the crops line up with the working copy to within a fraction of a pixel
+- [x] 1.2 Draw the crops while zooming
+  - [x] Show a crop only once the photo is magnified enough to look soft, fading it in gradually
+  - [x] Feather its edges, so sharpness changes smoothly rather than as a box
+  - [x] Same drawing for a photo on its own and nested inside another, so handoffs stay pixel-identical
+  - [x] Test: handoffs unchanged; no visible jump when a crop fades in
+    (handoffs within 1 level at 1080 and 2160; no frame changes more than its neighbours)
+- [x] 1.3 Prepare crops with the joins
+  - [x] Find each spot, build its crops, then prepare the join, all during "Preparing"
+  - [x] When scrubbing without preparing, build crops in the background and redraw
+  - [x] Free crops when a spot moves or photos change
 - [ ] 1.4 Sharper camouflage and surround: build the blend textures from the crops at small start sizes
 - [ ] 1.5 Measure
   - [ ] Add a zoom-sharpness score (fine detail late in each transition) to the seam harness
@@ -48,6 +49,7 @@ Auto place scores spots with a fast estimate. Rendering a few of the best spots 
 ## 4. Bring the improvements to Stitched World
 
 - [ ] 4.1 Measure Stitched World border scores on all three photo sets
+- [ ] 4.1b Look into one store pair at the 34% start size whose handoff differs by 4 levels in a few pixels (also in v17)
 - [ ] 4.2 Grade the border band's light toward the surroundings (fixed, so photos stay unchanged)
 - [ ] 4.3 Use the sharp crops in Stitched World too
 - [ ] 4.4 Measure, test, push

@@ -1,7 +1,7 @@
 "use strict";
 
-const CACHE_NAME = "zoom-loop-v17";
-const ASSET_VERSION = "v17";
+const CACHE_NAME = "zoom-loop-v18";
+const ASSET_VERSION = "v18";
 const APP_ASSETS = [
   "./",
   "./index.html",

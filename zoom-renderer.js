@@ -135,9 +135,55 @@ const PhotoZoom = (() => {
     if (x + offsetX + inset <= 0 && y + offsetY + inset <= 0 &&
         x + offsetX + core - inset >= outputSize && y + offsetY + core - inset >= outputSize) {
       drawProjectedPhoto(ctx, source, x, y, core, offsetX, offsetY, outputSize);
-      return;
+    } else {
+      drawProjectedPhoto(ctx, photoDetail(source, patch), x, y, core, offsetX, offsetY, outputSize);
     }
-    drawProjectedPhoto(ctx, photoDetail(source, patch), x, y, core, offsetX, offsetY, outputSize);
+    drawSharpCrops(ctx, source, x, y, core, offsetX, offsetY, outputSize);
+  }
+
+  // Sharp crops of a photo's original (see setDetail). They show once the
+  // 1024 working copy is magnified enough to look soft (1.6x, fully by 2.6x).
+  // They are drawn the same way whether the photo is on its own or nested,
+  // so handoffs stay pixel-identical even at sizes where a photo filling the
+  // screen already shows them.
+  const sharpCrops = new WeakMap();
+  let cropFeather;
+  function setDetail(source, crops) {
+    const previous = sharpCrops.get(source);
+    if (previous) releaseCanvases(...previous.map(crop => crop.canvas));
+    if (!crops) { sharpCrops.delete(source); return; }
+    if (!cropFeather) {
+      // Fades over the outer fifth, so sharpness changes gradually.
+      cropFeather = canvas(64);
+      const featherCtx = cropFeather.getContext("2d");
+      const mask = featherCtx.createImageData(64, 64);
+      for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+        mask.data[(y * 64 + x) * 4 + 3] = 255 * smooth(0, 0.2, Math.min(x + 0.5, y + 0.5, 63.5 - x, 63.5 - y) / 64);
+      }
+      featherCtx.putImageData(mask, 0, 0);
+    }
+    for (const crop of crops) {
+      const cropCtx = crop.canvas.getContext("2d");
+      // The crop may still carry the transform it was cut with.
+      cropCtx.setTransform(1, 0, 0, 1, 0, 0);
+      cropCtx.globalCompositeOperation = "destination-in";
+      cropCtx.drawImage(cropFeather, 0, 0, crop.canvas.width, crop.canvas.height);
+      cropCtx.globalCompositeOperation = "source-over";
+    }
+    // Widest first, so the closest, sharpest crop ends on top.
+    sharpCrops.set(source, [...crops].sort((a, b) => b.size - a.size));
+  }
+
+  function drawSharpCrops(ctx, source, x, y, core, offsetX, offsetY, outputSize) {
+    const crops = sharpCrops.get(source);
+    if (!crops) return;
+    const alpha = smooth(1.6, 2.6, core / source.width);
+    if (alpha <= 0) return;
+    ctx.globalAlpha = alpha;
+    for (const crop of crops) {
+      drawProjectedPhoto(ctx, crop.canvas, x + crop.x * core, y + crop.y * core, crop.size * core, offsetX, offsetY, outputSize);
+    }
+    ctx.globalAlpha = 1;
   }
 
   // The photo with its border band softened and its outermost edge faded,
@@ -1126,6 +1172,7 @@ const PhotoZoom = (() => {
       };
       if (stitched) {
         drawProjectedPhoto(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize);
+        drawSharpCrops(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize);
         local.drawImage(incoming.stitch, shiftX, shiftY, span, span);
         drawNested();
       } else {
@@ -1155,6 +1202,7 @@ const PhotoZoom = (() => {
     ctx.imageSmoothingQuality = "low";
     const rootSize = images[segment].canvas.width * camera.scale;
     drawProjectedPhoto(ctx, images[segment].canvas, -camera.viewX * camera.scale, -camera.viewY * camera.scale, rootSize, 0, 0, outputSize);
+    drawSharpCrops(ctx, images[segment].canvas, -camera.viewX * camera.scale, -camera.viewY * camera.scale, rootSize, 0, 0, outputSize);
     const projectedSize = camera.patchSize * camera.scale;
     const child = nested(segment + 1, first, projectedSize, 0,
       (camera.patchX - camera.viewX) * camera.scale - projectedSize * HALO,
@@ -1183,5 +1231,5 @@ const PhotoZoom = (() => {
     return shown / count;
   }
 
-  return { createTransition, geometry, render, matchPair, matchField, revealedShare };
+  return { createTransition, geometry, render, matchPair, matchField, revealedShare, setDetail };
 })();
