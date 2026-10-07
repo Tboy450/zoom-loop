@@ -21,7 +21,7 @@ const { chromium } = require("playwright");
 const root = path.resolve(__dirname, "..");
 const output = path.join(root, "test-results");
 const label = process.env.ZOOM_SCENE_LABEL || "current";
-const photoDirectory = path.join(output, "photos");
+const photoDirectory = path.join(output, process.env.ZOOM_PHOTO_DIR || "photos");
 const photos = fs.readdirSync(photoDirectory).filter(name => /\.jpg$/i.test(name)).map(name => path.join(photoDirectory, name));
 const server = http.createServer((req, res) => {
   const file = path.join(root, new URL(req.url, "http://localhost").pathname.replace(/^\/$/, "/index.html"));
@@ -51,9 +51,11 @@ const server = http.createServer((req, res) => {
     const sheetCoverage = process.env.ZOOM_SHEET_COVERAGE ? process.env.ZOOM_SHEET_COVERAGE.split(",").map(Number) : null;
     const patches = (process.env.ZOOM_PATCHES || "0.02,0.08,0.16,0.34").split(",").map(Number);
     const modes = (process.env.ZOOM_MODES || "blend,stitched").split(",");
-    const result = await page.evaluate(async ({ sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes }) => {
+    // Extra settings as JSON, such as {"pixelReveal":1}.
+    const extra = process.env.ZOOM_SETTINGS ? JSON.parse(process.env.ZOOM_SETTINGS) : {};
+    const result = await page.evaluate(async ({ sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes, extra }) => {
       const size = 480;
-      const base = { ...getSettings(), size };
+      const base = { ...getSettings(), size, ...extra };
       let order = state.images.map(image => image.name);
       if (sort) {
         state.images = await sortImagesBySimilarity(state.images, base);
@@ -231,7 +233,7 @@ const server = http.createServer((req, res) => {
         sheets.push({ mode, data: sheet.toDataURL("image/jpeg", 0.9) });
       }
       return { order, records, sheets, timing };
-    }, { sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes });
+    }, { sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes, extra });
     for (const sheet of result.sheets) fs.writeFileSync(path.join(output, `seam-${label}-${sheet.mode}.jpg`), Buffer.from(sheet.data.split(",")[1], "base64"));
     delete result.sheets;
     const summary = {};

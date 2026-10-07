@@ -74,13 +74,14 @@ const sampleBlendInput = document.querySelector("#sampleBlendInput");
 const edgeBlendInput = document.querySelector("#edgeBlendInput");
 const shapeMorphInput = document.querySelector("#shapeMorphInput");
 const grainInput = document.querySelector("#grainInput");
+const pixelRevealInput = document.querySelector("#pixelRevealInput");
 const symmetryInput = document.querySelector("#symmetryInput");
 const alignmentInput = document.querySelector("#alignmentInput");
 
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v15";
+const ASSET_VERSION = "v16";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -137,6 +138,7 @@ const controls = [
   edgeBlendInput,
   shapeMorphInput,
   grainInput,
+  pixelRevealInput,
   symmetryInput,
   alignmentInput
 ];
@@ -211,6 +213,7 @@ function getSettings() {
     edgeBlend: Number(edgeBlendInput.value) / 100,
     shapeMorph: Number(shapeMorphInput.value) / 100,
     grain: Number(grainInput.value) / 100,
+    pixelReveal: Number(pixelRevealInput.value) / 100,
     symmetry: Number(symmetryInput.value),
     alignment: Number(alignmentInput.value) / 360
   };
@@ -254,6 +257,7 @@ const readouts = [
   [edgeBlendInput, "#edgeBlendReadout", value => `${value}%`],
   [shapeMorphInput, "#shapeMorphReadout", value => `${value}%`],
   [grainInput, "#grainReadout", value => `${value}%`],
+  [pixelRevealInput, "#pixelRevealReadout", value => Number(value) === 0 ? "Soft" : `${value}%`],
   [symmetryInput, "#symmetryReadout", value => Number(value) === 1 ? "Off" : `${value} folds`],
   [alignmentInput, "#alignmentReadout", value => `${value}°`]
 ].map(([input, selector, format]) => [input, document.querySelector(selector), format]);
@@ -306,6 +310,7 @@ function transitionKey(fromId, toId, settings, override) {
     settings.edgeBlend.toFixed(3),
     settings.shapeMorph.toFixed(3),
     settings.grain.toFixed(3),
+    settings.pixelReveal.toFixed(3),
     settings.symmetry,
     settings.alignment.toFixed(3)
   ].join(":");
@@ -1038,7 +1043,7 @@ function syncRenderMode() {
   renderModeHelp.textContent = stitched
     ? "Fixed photo joins follow matching texture and lighting. Prepared locally before playback; only your photos are used."
     : "Hidden photo detail gradually emerges as you zoom.";
-  for (const control of [cinematicModeInput, grainInput, symmetryInput, alignmentInput]) control.disabled = isBusy() || stitched;
+  for (const control of [cinematicModeInput, grainInput, pixelRevealInput, symmetryInput, alignmentInput]) control.disabled = isBusy() || stitched;
   // Say why the effects are locked rather than leaving them silently grey.
   effectsStatus.textContent = stitched ? "Locked: set Mode to Photo Blend to use these"
     : isBusy() ? "Locked until the app finishes preparing" : "Photo Blend only";
@@ -1059,6 +1064,7 @@ function applySmoothDefaults() {
   edgeBlendInput.value = "86";
   shapeMorphInput.value = "72";
   grainInput.value = "0";
+  pixelRevealInput.value = "0";
   symmetryInput.value = "1";
   alignmentInput.value = "0";
 
@@ -1942,6 +1948,7 @@ function validateProject(project) {
   for (const control of controls) {
     // Older project files predate the matching-priority selector.
     if (control === matchPriorityInput && project.settings[control.id] === undefined) project.settings[control.id] = "balanced";
+    if (control === pixelRevealInput && project.settings[control.id] === undefined) project.settings[control.id] = "0";
     const value = project.settings[control.id];
     if (control.type === "checkbox") {
       if (typeof value !== "boolean") invalid();

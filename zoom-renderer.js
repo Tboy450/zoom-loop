@@ -21,6 +21,10 @@ const PhotoZoom = (() => {
   const RIM_LIGHT_START = 0.3;
   const RIM_LIGHT_END = 0.97;
   const REVEAL_MAP = 128;
+  // Least share of the photo's detail its camouflage always carries, up to
+  // PRESENCE_LEVELS levels of brightness.
+  const PRESENCE = 0.1;
+  const PRESENCE_LEVELS = 4;
   const analysisCache = new WeakMap();
   const extensionCache = new WeakMap();
   const layers = [];
@@ -550,8 +554,15 @@ const PhotoZoom = (() => {
         for (let c = 0; c < 3; c++) {
           const detail = childData.data[childPixel * 4 + c] - childLow[childPixel * 3 + c];
           const parentDetail = parentData.data[i + c] - parentLow[pixel * 3 + c];
+          // A faint, steady trace of the photo's own detail from the moment it
+          // appears, so it feels as if it had been there all along without
+          // being fully there; where the parent was smooth it vanished, then
+          // seemed to arrive all at once when it began to form.
           const detailGain = clamp((Math.abs(parentDetail) + 1) / (Math.abs(detail) + 12), 0.01, 0.28);
-          const camouflaged = parentData.data[i + c] + detail * detailGain;
+          // The trace is kept to a few levels, so even a stark photo inside
+          // a plain one stays a whisper rather than a visible pattern.
+          const trace = clamp(detail * Math.max(0, PRESENCE - detailGain), -PRESENCE_LEVELS, PRESENCE_LEVELS);
+          const camouflaged = parentData.data[i + c] + detail * detailGain + trace;
           const noise = (((x * 13 + y * 17) % 11) / 10 - 0.5) * grain * 12;
           embedded.data[i + c] = mix(childData.data[childPixel * 4 + c], camouflaged, bind) + noise;
         }
@@ -651,9 +662,10 @@ const PhotoZoom = (() => {
     return [1 - clamp(blur / 3, 0, 1), 1 - clamp((blur - 3) / 11, 0, 1), 1 - clamp((blur - 14) / Math.max(1, broadRadius - 14), 0, 1)];
   }
 
-  // 0 inside the part of a photo that becomes the full frame, rising to 1 at
-  // its border and beyond.
-  const borderBand = d => smooth(0.4, 0.5, d);
+  // 0 inside the part of a photo that becomes the full frame (and that the
+  // plain photo is swapped in for, 9% in from its border), rising to 1 at its
+  // border and beyond.
+  const borderBand = d => smooth(0.41, 0.5, d);
 
   function blurMap(values, size, radius) {
     const out = new Float32Array(values.length), temp = new Float32Array(values.length);
@@ -701,7 +713,12 @@ const PhotoZoom = (() => {
     // Regions about a twentieth of the photo across, with edges shaped by
     // finer matching detail so the growing front follows the pictures.
     const broadRegions = blurMap(mismatch, size, 3), fineRegions = blurMap(mismatch, size, 1);
-    const regions = broadRegions.map((value, i) => value * 0.6 + fineRegions[i] * 0.4);
+    // Pixel reveal swaps the regions for single cells, still ordered by how
+    // well each matches, with a little per-cell scatter for a pixel dissolve.
+    const pixel = settings.pixelReveal || 0;
+    const scatter = i => (((Math.imul(i + 1, 2654435761) >>> 0) % 1000) / 1000 - 0.5) * 0.06;
+    const regions = broadRegions.map((value, i) =>
+      mix(value * 0.6 + fineRegions[i] * 0.4, mismatch[i] + scatter(i) * pixel, smooth(0, 0.6, pixel)));
     inside.sort((a, b) => regions[a] - regions[b]);
     const rank = new Float32Array(size * size);
     inside.forEach((i, n) => { rank[i] = n / Math.max(1, inside.length - 1); });
@@ -713,7 +730,24 @@ const PhotoZoom = (() => {
     // its surroundings least, so its inner edge follows the pictures rather
     // than a square.
     const rimStart = blurMap(rank.map((value, i) => 0.22 - (value - 0.5) * 0.18 * settings.shapeMorph), size, 4);
-    return { order: blurMap(order, size, 1), distance, rimStart };
+    // Above half, the specks grow into square blocks (up to 8 across the
+    // photo at full strength), each forming at its cells' average order.
+    if (pixel > 0.5) {
+      const block = Math.round(1 + (pixel - 0.5) * 14);
+      for (let by = 0; by < size; by += block) {
+        for (let bx = 0; bx < size; bx += block) {
+          let sum = 0, count = 0;
+          for (let y = by; y < Math.min(size, by + block); y++) for (let x = bx; x < Math.min(size, bx + block); x++) {
+            if (distance[y * size + x] < 0.5) { sum += order[y * size + x]; count++; }
+          }
+          if (!count) continue;
+          for (let y = by; y < Math.min(size, by + block); y++) for (let x = bx; x < Math.min(size, bx + block); x++) {
+            if (distance[y * size + x] < 0.5) order[y * size + x] = sum / count;
+          }
+        }
+      }
+    }
+    return { order: pixel > 0.5 ? order : blurMap(order, size, 1), distance, rimStart, pixel };
   }
 
   // The photo as soft as the magnified parent around it. One parent pixel
@@ -738,6 +772,12 @@ const PhotoZoom = (() => {
     }
     ctx.putImageData(image, 0, 0);
     return result;
+  }
+
+  // Width of the soft edge between formed and camouflaged parts: crisper as
+  // pixel reveal rises, softer in cinematic mode.
+  function revealSoftness(settings) {
+    return mix(settings.cinematicMode ? 0.14 : 0.07, 0.012, settings.pixelReveal || 0);
   }
 
   // Photo Blend timing for a photo covering `coverage` of the screen. At
@@ -768,7 +808,7 @@ const PhotoZoom = (() => {
     // scene is barely softened.
     const focusEnd = 0.5;
     return {
-      soft: (1 - smooth(0.02, 0.08, settings.patch)) *
+      soft: (1 - smooth(0.02, 0.08, settings.patch)) * (1 - (settings.pixelReveal || 0)) *
         (1 - clamp((zoomed - Math.log(formEnd)) / Math.max(1e-6, Math.log(focusEnd) - Math.log(formEnd)), 0, 1)),
       form: clamp((zoomed - Math.log(formStart)) / (Math.log(formEnd) - Math.log(formStart)), 0, 1),
       rim: smooth(revealStart, RIM_END, coverage),
@@ -797,7 +837,7 @@ const PhotoZoom = (() => {
       revealScratch = canvas(TEXTURE_SIZE);
     }
     const low = form * (1 + 2 * softness) - 2 * softness, data = revealMaskImage.data;
-    const { order, distance, rimStart } = incoming.order;
+    const { order, distance, rimStart, pixel } = incoming.order;
     for (let i = 0; i < order.length; i++) {
       const inner = smooth(low, low + 2 * softness, order[i]);
       const border = smooth(rimStart[i], 0.5, distance[i]) * (1 - rim);
@@ -808,7 +848,8 @@ const PhotoZoom = (() => {
     scratch.globalCompositeOperation = "copy";
     scratch.drawImage(incoming.texture, 0, 0);
     scratch.globalCompositeOperation = "destination-in";
-    scratch.imageSmoothingEnabled = true;
+    // Square pixel edges for a bold pixel dissolve.
+    scratch.imageSmoothingEnabled = pixel < 0.5;
     scratch.drawImage(revealMask, 0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
     scratch.globalCompositeOperation = "source-over";
     local.drawImage(revealScratch, x, y, span, span);
@@ -1060,7 +1101,7 @@ const PhotoZoom = (() => {
         }
         drawLighting(local, incoming.lighting, lit, shiftX, shiftY, span);
         drawLighting(local, incoming.lighting?.rim, Math.max(0, litRim - lit), shiftX, shiftY, span);
-        drawCamouflage(local, incoming, form, rim, cinematic ? 0.14 : 0.07, shiftX, shiftY, span);
+        drawCamouflage(local, incoming, form, rim, revealSoftness(incoming.settings), shiftX, shiftY, span);
       }
 
       // Feather only the extension. It leaves the viewport naturally; making
@@ -1092,7 +1133,7 @@ const PhotoZoom = (() => {
     if (!order) return 1;
     const cinematic = transition.settings.cinematicMode, zoomed = Math.log(coverage);
     const { form, rim } = revealTiming(transition.settings, cinematic, zoomed, coverage, transition.lighting);
-    const softness = cinematic ? 0.14 : 0.07, low = form * (1 + 2 * softness) - 2 * softness;
+    const softness = revealSoftness(transition.settings), low = form * (1 + 2 * softness) - 2 * softness;
     let shown = 0, count = 0;
     for (let i = 0; i < order.order.length; i++) {
       if (order.distance[i] >= 0.5) continue;

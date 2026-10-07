@@ -10,10 +10,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Zoom Loop">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="manifest.webmanifest?v15">
+    <link rel="manifest" href="manifest.webmanifest?v16">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
-    <link rel="stylesheet" href="styles.css?v15">
+    <link rel="stylesheet" href="styles.css?v16">
   </head>
   <body>
     <main class="app-shell">
@@ -229,6 +229,12 @@
           <p class="hint">Shows the next photo later, with a slower fade in.</p>
 
           <label class="field slider-field">
+            <span>Pixel reveal <output id="pixelRevealReadout" for="pixelRevealInput"></output></span>
+            <input id="pixelRevealInput" type="range" min="0" max="100" value="0">
+          </label>
+          <p class="hint">How the next photo forms. 0 melts it in softly; higher builds it from finer, crisper pixel specks, up to a bold pixel dissolve.</p>
+
+          <label class="field slider-field">
             <span>Film grain <output id="grainReadout" for="grainInput"></output></span>
             <input id="grainInput" type="range" min="0" max="100" value="0">
           </label>
@@ -264,8 +270,8 @@
       </div>
     </dialog>
 
-    <script src="vendor/mp4-muxer.js?v15"></script>
-    <script src="zoom-renderer.js?v15"></script>
-    <script src="app.js?v15"></script>
+    <script src="vendor/mp4-muxer.js?v16"></script>
+    <script src="zoom-renderer.js?v16"></script>
+    <script src="app.js?v16"></script>
   </body>
 </html>
