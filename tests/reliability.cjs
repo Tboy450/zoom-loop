@@ -186,6 +186,7 @@ module.exports = async function testReliability(browser, url, fixtures) {
     await page.locator("#renderModeInput").selectOption("stitched");
     assert.equal(await page.locator("#cinematicModeInput").isDisabled(), true);
     assert.equal(await page.locator("#grainInput").isDisabled(), true);
+    assert.match(await page.locator("#effectsStatus").textContent(), /set Mode to Photo Blend/);
     await page.locator("#playButton").click();
     await page.waitForFunction(() => state.isPlaying && !state.isPreparing);
     assert.equal(await page.evaluate(() => state.transitions.size), 3);

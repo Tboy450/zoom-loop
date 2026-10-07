@@ -58,6 +58,7 @@ const pickerPlayButton = document.querySelector("#pickerPlayButton");
 const pickerNextButton = document.querySelector("#pickerNextButton");
 const pickerDoneButton = document.querySelector("#pickerDoneButton");
 const timingSummary = document.querySelector("#timingSummary");
+const effectsStatus = document.querySelector("#effectsStatus");
 
 const sizeInput = document.querySelector("#sizeInput");
 const durationInput = document.querySelector("#durationInput");
@@ -79,7 +80,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v14";
+const ASSET_VERSION = "v15";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -1038,6 +1039,10 @@ function syncRenderMode() {
     ? "Fixed photo joins follow matching texture and lighting. Prepared locally before playback; only your photos are used."
     : "Hidden photo detail gradually emerges as you zoom.";
   for (const control of [cinematicModeInput, grainInput, symmetryInput, alignmentInput]) control.disabled = isBusy() || stitched;
+  // Say why the effects are locked rather than leaving them silently grey.
+  effectsStatus.textContent = stitched ? "Locked: set Mode to Photo Blend to use these"
+    : isBusy() ? "Locked until the app finishes preparing" : "Photo Blend only";
+  effectsStatus.classList.toggle("is-locked", stitched || isBusy());
 }
 
 function applySmoothDefaults() {

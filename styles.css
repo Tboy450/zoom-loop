@@ -622,6 +622,10 @@ input[type="range"] {
   margin: 0;
 }
 
+.effects-section > summary .hint.is-locked {
+  color: var(--accent-3);
+}
+
 .picker-panel {
   display: grid;
   gap: 10px;

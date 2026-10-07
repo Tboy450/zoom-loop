@@ -18,6 +18,8 @@ const PhotoZoom = (() => {
   const CINEMATIC_FORM_END = 0.7;
   const RIM_END = 0.92;
   const LIGHT_END = 0.95;
+  const RIM_LIGHT_START = 0.3;
+  const RIM_LIGHT_END = 0.97;
   const REVEAL_MAP = 128;
   const analysisCache = new WeakMap();
   const extensionCache = new WeakMap();
@@ -124,13 +126,19 @@ const PhotoZoom = (() => {
       left, top, right - left, bottom - top);
   }
 
-  function drawPhotoDetail(ctx, source, x, y, core, offsetX, offsetY, outputSize) {
+  function drawPhotoDetail(ctx, source, x, y, core, offsetX, offsetY, outputSize, patch) {
     const inset = core * 0.09;
     if (x + offsetX + inset <= 0 && y + offsetY + inset <= 0 &&
         x + offsetX + core - inset >= outputSize && y + offsetY + core - inset >= outputSize) {
       drawProjectedPhoto(ctx, source, x, y, core, offsetX, offsetY, outputSize);
       return;
     }
+    drawProjectedPhoto(ctx, photoDetail(source, patch), x, y, core, offsetX, offsetY, outputSize);
+  }
+
+  // The photo with its border band softened and its outermost edge faded,
+  // cached per photo. Built while preparing a join so playback never stalls.
+  function photoDetail(source, patch) {
     if (!detailCutout) {
       detailCutout = canvas(128);
       const maskCtx = detailCutout.getContext("2d");
@@ -143,16 +151,42 @@ const PhotoZoom = (() => {
       }
       maskCtx.putImageData(mask, 0, 0);
     }
-    let sharp = detailCache.get(source);
-    if (!sharp) {
-      sharp = canvas(source.width);
-      const detailCtx = sharp.getContext("2d");
+    let cached = detailCache.get(source);
+    if (!cached || cached.patch !== patch) {
+      const sharp = cached?.canvas || canvas(source.width);
+      const detailCtx = sharp.getContext("2d", { willReadFrequently: true });
+      detailCtx.globalCompositeOperation = "copy";
       detailCtx.drawImage(source, 0, 0);
+      detailCtx.globalCompositeOperation = "source-over";
+      softenBorder(detailCtx, sharp.width, patch);
       detailCtx.globalCompositeOperation = "destination-out";
       detailCtx.drawImage(detailCutout, 0, 0, sharp.width, sharp.height);
-      detailCache.set(source, sharp);
+      detailCtx.globalCompositeOperation = "source-over";
+      cached = { canvas: sharp, patch };
+      detailCache.set(source, cached);
     }
-    drawProjectedPhoto(ctx, sharp, x, y, core, offsetX, offsetY, outputSize);
+    return cached.canvas;
+  }
+
+  // The photo's own outer tenth, softened toward its border like the
+  // surround (see borderDetail): the magnified parent around it cannot show
+  // detail finer than 1/patch photo pixels, so a sharp border read as a
+  // square. The full frame after the handoff never includes this band.
+  function softenBorder(ctx, size, patch) {
+    const radius = Math.round(0.6 / patch * size / 1024);
+    if (radius < 1) return;
+    const image = ctx.getImageData(0, 0, size, size);
+    const blurred = lowPass(image, radius);
+    for (let y = 0; y < size; y++) {
+      const dy = Math.abs((y + 0.5) / size - 0.5);
+      for (let x = 0; x < size; x++) {
+        const amount = borderBand(Math.max(dy, Math.abs((x + 0.5) / size - 0.5)));
+        if (!amount) continue;
+        const i = (y * size + x) * 4, k = (y * size + x) * 3;
+        for (let c = 0; c < 3; c++) image.data[i + c] = mix(image.data[i + c], blurred[k + c], amount);
+      }
+    }
+    ctx.putImageData(image, 0, 0);
   }
 
   function sample(data, u, v, channel) {
@@ -483,6 +517,8 @@ const PhotoZoom = (() => {
     const childMid = lowPass(childData, 14);
     const lighting = createLighting(parentLow, childLow, settings);
     const order = createRevealOrder(parentMid, childMid, settings);
+    const soft = createSoftPhoto(childData, settings.patch);
+    photoDetail(child, settings.patch);
     const texture = canvas(TEXTURE_SIZE);
     const ctx = texture.getContext("2d");
     const embedded = ctx.createImageData(TEXTURE_SIZE, TEXTURE_SIZE);
@@ -535,9 +571,10 @@ const PhotoZoom = (() => {
     ctx.putImageData(embedded, 0, 0);
     cutoutCtx.putImageData(mask, 0, 0);
     const surround = createSurround(parentData, childData, settings,
-      { parent: parentLow, child: childLow, parentMid, childMid });
-    return { settings, rect: portal, texture, cutout, extension: surround, placement, lighting, order,
-      release: () => releaseCanvases(texture, cutout, surround, lighting?.darken, lighting?.brighten, lighting?.lift) };
+      { radius, parent: parentLow, child: childLow, parentMid, childMid });
+    return { settings, rect: portal, texture, cutout, extension: surround, placement, lighting, order, soft,
+      release: () => releaseCanvases(texture, cutout, surround, soft, lighting?.darken, lighting?.brighten, lighting?.lift,
+        lighting?.rim?.darken, lighting?.rim?.brighten, lighting?.rim?.lift) };
   }
 
   function createLighting(parentLow, childLow, settings) {
@@ -548,39 +585,75 @@ const PhotoZoom = (() => {
     // color-dodge, which scale pixels and so keep the photo's contrast. A
     // scale cannot lift black, so whatever brightening remains past the
     // largest gain comes from screen, which raises shadows.
+    // A second set covers only the photo's outer part, which keeps the
+    // surrounding light longer than the middle (see render): the photo's own
+    // colors then fade in from the middle instead of ending in a square.
     const size = 80, reach = mix(0.32, 0.5, settings.edgeBlend);
-    const maps = [canvas(size), canvas(size), canvas(size)];
-    const contexts = maps.map(map => map.getContext("2d"));
-    const [down, up, lift] = contexts.map(ctx => ctx.createImageData(size, size));
-    let largest = 0;
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const u = (x + 0.5) / size * SPAN - HALO, v = (y + 0.5) / size * SPAN - HALO;
-        // Full strength on the photo, fading out with the halo's handoff.
-        const weight = 1 - smooth(0, reach, Math.hypot(Math.max(0, -u, u - 1), Math.max(0, -v, v - 1)));
-        const k = (Math.min(TEXTURE_SIZE - 1, Math.floor((y + 0.5) / size * TEXTURE_SIZE)) * TEXTURE_SIZE +
-          Math.min(TEXTURE_SIZE - 1, Math.floor((x + 0.5) / size * TEXTURE_SIZE))) * 3;
-        const i = (y * size + x) * 4;
-        for (let c = 0; c < 3; c++) {
-          const target = parentLow[k + c] / 255, source = childLow[k + c] / 255;
-          const ratio = clamp((target + 0.03) / (source + 0.03), 0.4, 4);
-          const gain = Math.min(ratio, 2);
-          const scaled = Math.min(1, source * Math.max(1, gain));
-          const raise = ratio > 1 ? clamp((target - scaled) / Math.max(0.02, 1 - scaled), 0, 1) : 0;
-          const weighted = 1 + (gain - 1) * weight;
-          largest = Math.max(largest, Math.abs(weighted - 1), raise * weight);
-          down.data[i + c] = 255 * Math.min(1, weighted);
-          // color-dodge divides by (1 - source), so this gives x * gain.
-          up.data[i + c] = 255 * Math.max(0, 1 - 1 / weighted);
-          lift.data[i + c] = 255 * raise * weight;
+    const build = rimOnly => {
+      const maps = [canvas(size), canvas(size), canvas(size)];
+      const contexts = maps.map(map => map.getContext("2d"));
+      const [down, up, lift] = contexts.map(ctx => ctx.createImageData(size, size));
+      let largest = 0;
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const u = (x + 0.5) / size * SPAN - HALO, v = (y + 0.5) / size * SPAN - HALO;
+          // Full strength on the photo, fading out with the halo's handoff.
+          const weight = (1 - smooth(0, reach, Math.hypot(Math.max(0, -u, u - 1), Math.max(0, -v, v - 1)))) *
+            (rimOnly ? smooth(0.22, 0.5, Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5))) : 1);
+          const k = (Math.min(TEXTURE_SIZE - 1, Math.floor((y + 0.5) / size * TEXTURE_SIZE)) * TEXTURE_SIZE +
+            Math.min(TEXTURE_SIZE - 1, Math.floor((x + 0.5) / size * TEXTURE_SIZE))) * 3;
+          const i = (y * size + x) * 4;
+          for (let c = 0; c < 3; c++) {
+            const target = parentLow[k + c] / 255, source = childLow[k + c] / 255;
+            const ratio = clamp((target + 0.03) / (source + 0.03), 0.4, 4);
+            const gain = Math.min(ratio, 2);
+            const scaled = Math.min(1, source * Math.max(1, gain));
+            const raise = ratio > 1 ? clamp((target - scaled) / Math.max(0.02, 1 - scaled), 0, 1) : 0;
+            const weighted = 1 + (gain - 1) * weight;
+            largest = Math.max(largest, Math.abs(weighted - 1), raise * weight);
+            down.data[i + c] = 255 * Math.min(1, weighted);
+            // color-dodge divides by (1 - source), so this gives x * gain.
+            up.data[i + c] = 255 * Math.max(0, 1 - 1 / weighted);
+            lift.data[i + c] = 255 * raise * weight;
+          }
+          down.data[i + 3] = up.data[i + 3] = lift.data[i + 3] = 255;
         }
-        down.data[i + 3] = up.data[i + 3] = lift.data[i + 3] = 255;
       }
-    }
-    if (largest < 0.02) return null;
-    [down, up, lift].forEach((image, index) => contexts[index].putImageData(image, 0, 0));
-    return { darken: maps[0], brighten: maps[1], lift: maps[2], strength: 0.9 * settings.bind };
+      if (largest < 0.02) return null;
+      [down, up, lift].forEach((image, index) => contexts[index].putImageData(image, 0, 0));
+      return { darken: maps[0], brighten: maps[1], lift: maps[2] };
+    };
+    const whole = build(false);
+    return whole && { ...whole, rim: build(true), strength: 0.9 * settings.bind };
   }
+
+  function drawLighting(local, maps, alpha, x, y, span) {
+    if (!maps || alpha < 0.004) return;
+    local.globalAlpha = alpha;
+    local.globalCompositeOperation = "multiply";
+    local.drawImage(maps.darken, x, y, span, span);
+    local.globalCompositeOperation = "color-dodge";
+    local.drawImage(maps.brighten, x, y, span, span);
+    local.globalCompositeOperation = "screen";
+    local.drawImage(maps.lift, x, y, span, span);
+    local.globalCompositeOperation = "source-over";
+    local.globalAlpha = 1;
+  }
+
+  // Where a photo meets its parent, the parent is magnified so far that one
+  // of its pixels covers 1/patch pixels of the photo (0.3125/patch texture
+  // pixels). Detail finer than that drew a crisp square inside a soft scene,
+  // so it fades out toward the border. Returns the share of each child
+  // detail band (finer than 3, 3 to 14, and 14 to broadRadius texture
+  // pixels) that remains at the border; the handoff never shows this band.
+  function borderDetail(patch, broadRadius) {
+    const blur = 0.6 * 0.3125 / patch;
+    return [1 - clamp(blur / 3, 0, 1), 1 - clamp((blur - 3) / 11, 0, 1), 1 - clamp((blur - 14) / Math.max(1, broadRadius - 14), 0, 1)];
+  }
+
+  // 0 inside the part of a photo that becomes the full frame, rising to 1 at
+  // its border and beyond.
+  const borderBand = d => smooth(0.4, 0.5, d);
 
   function blurMap(values, size, radius) {
     const out = new Float32Array(values.length), temp = new Float32Array(values.length);
@@ -615,19 +688,93 @@ const PhotoZoom = (() => {
         const u = (x + 0.5) / size * SPAN - HALO, v = (y + 0.5) / size * SPAN - HALO;
         distance[i] = Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5));
         const k = (Math.floor((y + 0.5) / size * TEXTURE_SIZE) * TEXTURE_SIZE + Math.floor((x + 0.5) / size * TEXTURE_SIZE)) * 3;
-        mismatch[i] = (Math.abs(childMid[k] - parentMid[k]) * 0.3 + Math.abs(childMid[k + 1] - parentMid[k + 1]) * 0.5 +
-          Math.abs(childMid[k + 2] - parentMid[k + 2]) * 0.2) / 255;
+        // Light (brightness) and color (the rest) mismatch, both counted, so
+        // parts that already fit the scene's light and color come first.
+        const light = c => c[k] * 0.2126 + c[k + 1] * 0.7152 + c[k + 2] * 0.0722;
+        const childLight = light(childMid), parentLight = light(parentMid);
+        const color = Math.hypot(childMid[k] - childLight - parentMid[k] + parentLight,
+          childMid[k + 2] - childLight - parentMid[k + 2] + parentLight);
+        mismatch[i] = (Math.abs(childLight - parentLight) * 0.55 + color * 0.45) / 255;
         if (distance[i] < 0.5) inside.push(i);
       }
     }
-    // Coherent regions about a twentieth of the photo across, not speckle.
-    const regions = blurMap(mismatch, size, 3);
+    // Regions about a twentieth of the photo across, with edges shaped by
+    // finer matching detail so the growing front follows the pictures.
+    const broadRegions = blurMap(mismatch, size, 3), fineRegions = blurMap(mismatch, size, 1);
+    const regions = broadRegions.map((value, i) => value * 0.6 + fineRegions[i] * 0.4);
     inside.sort((a, b) => regions[a] - regions[b]);
     const rank = new Float32Array(size * size);
     inside.forEach((i, n) => { rank[i] = n / Math.max(1, inside.length - 1); });
     const order = new Float32Array(size * size).fill(1);
-    for (const i of inside) order[i] = mix(distance[i] / 0.5, rank[i], settings.shapeMorph);
-    return { order: blurMap(order, size, 1), distance };
+    // Mostly the match; Organic edge 0 still keeps half of it.
+    const matchWeight = 0.5 + 0.5 * settings.shapeMorph;
+    for (const i of inside) order[i] = mix(distance[i] / 0.5, rank[i], matchWeight);
+    // The border camouflage begins nearer the middle where the photo matches
+    // its surroundings least, so its inner edge follows the pictures rather
+    // than a square.
+    const rimStart = blurMap(rank.map((value, i) => 0.22 - (value - 0.5) * 0.18 * settings.shapeMorph), size, 4);
+    return { order: blurMap(order, size, 1), distance, rimStart };
+  }
+
+  // The photo as soft as the magnified parent around it. One parent pixel
+  // covers 1/patch photo pixels at every zoom, so a fixed blur matches the
+  // parent's softness throughout. Drawn over the sharp photo while it forms
+  // and faded out as it grows: a focus pull, so its first specks are not
+  // crisp dots inside a blurred scene. Same picture, so no double exposure.
+  function createSoftPhoto(child, patch) {
+    const radius = Math.round(0.6 * 0.3125 / patch);
+    if (radius < 2) return null;
+    const blurred = lowPass(child, radius);
+    const result = canvas(TEXTURE_SIZE);
+    const ctx = result.getContext("2d");
+    const image = ctx.createImageData(TEXTURE_SIZE, TEXTURE_SIZE);
+    for (let y = 0; y < TEXTURE_SIZE; y++) {
+      for (let x = 0; x < TEXTURE_SIZE; x++) {
+        const u = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO, v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
+        const i = (y * TEXTURE_SIZE + x) * 4, k = (y * TEXTURE_SIZE + x) * 3;
+        image.data[i] = blurred[k]; image.data[i + 1] = blurred[k + 1]; image.data[i + 2] = blurred[k + 2];
+        image.data[i + 3] = 255 * (1 - smooth(0.45, 0.5, Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5))));
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+    return result;
+  }
+
+  // Photo Blend timing for a photo covering `coverage` of the screen. At
+  // first the photo is only its color and light inside the parent's texture.
+  // Its own form then grows out of the areas that already match, the border
+  // stays softly camouflaged until late, and the photo is lit like its
+  // surroundings until it returns to its true light before filling the
+  // screen, so the handoff to the next segment stays pixel-identical.
+  function revealTiming(settings, cinematic, zoomed, coverage, lighting) {
+    // The photo begins forming while it is still tiny: at small start sizes
+    // from half its start size, nested inside the photo before, so its
+    // best-matching specks show within its first few pixels on screen and
+    // grow from there. Waiting for a fixed share of the screen hid it for
+    // nearly half the zoom. From 8% up it starts at 1.25x its start size,
+    // since forming earlier there made the border's ghost frame stronger.
+    // It finishes forming over an 8x wider view.
+    const revealStart = cinematic ? CINEMATIC_REVEAL_START : REVEAL_START;
+    const earliest = mix(cinematic ? 0.8 : 0.5, cinematic ? 1.75 : 1.25, smooth(0.02, 0.08, settings.patch));
+    const formStart = Math.min(revealStart, settings.patch / FRAME * earliest);
+    const formEnd = Math.min(cinematic ? CINEMATIC_FORM_END : FORM_END, formStart * (cinematic ? 10 : 8));
+    // Constant growth through the zoom, so each frame reveals about the same
+    // few pixels; an eased curve grew 1.5x faster in the middle. The border
+    // camouflage and lighting match follow the photo's actual size on
+    // screen, since that is when its border shows.
+    const strength = lighting ? lighting.strength : 0;
+    // Stays as soft as the scene until it has formed, then sharpens while it
+    // grows to cover half the screen. Small start sizes only: from 8% up the
+    // scene is barely softened.
+    const focusEnd = 0.5;
+    return {
+      soft: (1 - smooth(0.02, 0.08, settings.patch)) *
+        (1 - clamp((zoomed - Math.log(formEnd)) / Math.max(1e-6, Math.log(focusEnd) - Math.log(formEnd)), 0, 1)),
+      form: clamp((zoomed - Math.log(formStart)) / (Math.log(formEnd) - Math.log(formStart)), 0, 1),
+      rim: smooth(revealStart, RIM_END, coverage),
+      lit: strength * (1 - smooth(Math.log(revealStart * 2), Math.log(LIGHT_END), zoomed)),
+      litRim: strength * (1 - smooth(Math.log(RIM_LIGHT_START), Math.log(RIM_LIGHT_END), zoomed))
+    };
   }
 
   let revealMask, revealMaskImage, revealScratch;
@@ -650,10 +797,10 @@ const PhotoZoom = (() => {
       revealScratch = canvas(TEXTURE_SIZE);
     }
     const low = form * (1 + 2 * softness) - 2 * softness, data = revealMaskImage.data;
-    const { order, distance } = incoming.order;
+    const { order, distance, rimStart } = incoming.order;
     for (let i = 0; i < order.length; i++) {
       const inner = smooth(low, low + 2 * softness, order[i]);
-      const border = smooth(0.22, 0.5, distance[i]) * (1 - rim);
+      const border = smooth(rimStart[i], 0.5, distance[i]) * (1 - rim);
       data[i * 4 + 3] = 255 * Math.max(inner, border);
     }
     revealMask.getContext("2d").putImageData(revealMaskImage, 0, 0);
@@ -681,6 +828,7 @@ const PhotoZoom = (() => {
     const ctx = result.getContext("2d");
     const out = ctx.createImageData(TEXTURE_SIZE, TEXTURE_SIZE);
     const [p0, p1, p2] = parentBands, [c0, c1, c2] = childBands;
+    const [a0, a1, a2] = borderDetail(settings.patch, broad.radius);
     for (let y = 0; y < TEXTURE_SIZE; y++) {
       const v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
       const dy = Math.max(0, -v, v - 1);
@@ -690,18 +838,20 @@ const PhotoZoom = (() => {
         const dx = Math.max(0, -u, u - 1);
         const i = pixel * 4;
         out.data[i + 3] = 255;
-        if (!dx && !dy) {
+        const soften = borderBand(Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5)));
+        if (!soften) {
           out.data[i] = child.data[i]; out.data[i + 1] = child.data[i + 1]; out.data[i + 2] = child.data[i + 2];
           continue;
         }
+        const k0 = 1 - soften * (1 - a0), k1 = 1 - soften * (1 - a1), k2 = 1 - soften * (1 - a2);
         const outside = Math.hypot(dx, dy);
         const w0 = smooth(0, r0, outside), w1 = smooth(0, r1, outside), w2 = smooth(0, r2, outside), w3 = smooth(0, r3, outside);
         for (let c = 0; c < 3; c++) {
           const k = pixel * 3 + c;
           out.data[i + c] =
-            mix(child.data[i + c] - c0[k], parent.data[i + c] - p0[k], w0) +
-            mix(c0[k] - c1[k], p0[k] - p1[k], w1) +
-            mix(c1[k] - c2[k], p1[k] - p2[k], w2) +
+            mix((child.data[i + c] - c0[k]) * k0, parent.data[i + c] - p0[k], w0) +
+            mix((c0[k] - c1[k]) * k1, p0[k] - p1[k], w1) +
+            mix((c1[k] - c2[k]) * k2, p1[k] - p2[k], w2) +
             mix(c2[k], p2[k], w3);
         }
       }
@@ -717,6 +867,7 @@ const PhotoZoom = (() => {
     const parentBands = [3, 14, 48].map(radius => lowPass(parent, radius));
     const childBands = [3, 14, 48].map(radius => lowPass(child, radius));
     const contour = settings.shapeMorph > 0 ? findStitchContour(parent, child, parentBands[0], childBands[0]) : null;
+    const [a0, a1, a2] = borderDetail(settings.patch, 48);
     const stitch = canvas(TEXTURE_SIZE);
     const ctx = stitch.getContext("2d");
     const result = ctx.createImageData(TEXTURE_SIZE, TEXTURE_SIZE);
@@ -743,13 +894,15 @@ const PhotoZoom = (() => {
         const broad = (1 - smooth(0.32, mix(0.76, 1, settings.edgeBlend), d + offset * 0.35)) *
           (1 - smooth(0, 0.2, outside));
         const lighting = 1 - smooth(mix(0.45, 0.22, settings.bind), 1, d + offset * 0.15);
+        const soften = borderBand(d);
+        const k0 = 1 - soften * (1 - a0), k1 = 1 - soften * (1 - a1), k2 = 1 - soften * (1 - a2);
         for (let c = 0; c < 3; c++) {
           const k = pixel * 3 + c;
           const a = pixel * 4 + c;
           result.data[a] =
-            mix(parent.data[a] - parentBands[0][k], child.data[a] - childBands[0][k], fine) +
-            mix(parentBands[0][k] - parentBands[1][k], childBands[0][k] - childBands[1][k], medium) +
-            mix(parentBands[1][k] - parentBands[2][k], childBands[1][k] - childBands[2][k], broad) +
+            mix(parent.data[a] - parentBands[0][k], (child.data[a] - childBands[0][k]) * k0, fine) +
+            mix(parentBands[0][k] - parentBands[1][k], (childBands[0][k] - childBands[1][k]) * k1, medium) +
+            mix(parentBands[1][k] - parentBands[2][k], (childBands[1][k] - childBands[2][k]) * k2, broad) +
             mix(parentBands[2][k], childBands[2][k], lighting);
         }
         // The central 80% remains the full-resolution original, including its
@@ -869,11 +1022,8 @@ const PhotoZoom = (() => {
       // Timing follows the zoom (log of coverage), so pacing is even.
       const cinematic = incoming.settings.cinematicMode;
       const zoomed = Math.log(Math.max(coverage, 1e-6));
-      const revealStart = cinematic ? CINEMATIC_REVEAL_START : REVEAL_START;
-      const form = stitched ? 1 : smooth(Math.log(revealStart), Math.log(cinematic ? CINEMATIC_FORM_END : FORM_END), zoomed);
-      const rim = stitched ? 1 : smooth(revealStart, RIM_END, coverage);
-      const lit = stitched || !incoming.lighting ? 0 :
-        incoming.lighting.strength * (1 - smooth(Math.log(revealStart * 2), Math.log(LIGHT_END), zoomed));
+      const { soft, form, rim, lit, litRim } = stitched ? { soft: 0, form: 1, rim: 1, lit: 0, litRim: 0 } :
+        revealTiming(incoming.settings, cinematic, zoomed, coverage, incoming.lighting);
       local.clearRect(0, 0, layer.width, layer.height);
       local.imageSmoothingEnabled = true;
       // Bilinear filtering stays consistent when a photo crosses 1:1 scale.
@@ -900,20 +1050,16 @@ const PhotoZoom = (() => {
         local.drawImage(incoming.stitch, shiftX, shiftY, span, span);
         drawNested();
       } else {
-        drawPhotoDetail(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize);
-        // Nested photos belong to this one: lit and camouflaged with it.
+        drawPhotoDetail(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize, settings.patch);
+        // Nested photos belong to this one: softened, lit and camouflaged with it.
         drawNested();
-        if (lit > 0.004) {
-          local.globalAlpha = lit;
-          local.globalCompositeOperation = "multiply";
-          local.drawImage(incoming.lighting.darken, shiftX, shiftY, span, span);
-          local.globalCompositeOperation = "color-dodge";
-          local.drawImage(incoming.lighting.brighten, shiftX, shiftY, span, span);
-          local.globalCompositeOperation = "screen";
-          local.drawImage(incoming.lighting.lift, shiftX, shiftY, span, span);
-          local.globalCompositeOperation = "source-over";
+        if (incoming.soft && soft > 0.004) {
+          local.globalAlpha = soft;
+          local.drawImage(incoming.soft, shiftX, shiftY, span, span);
           local.globalAlpha = 1;
         }
+        drawLighting(local, incoming.lighting, lit, shiftX, shiftY, span);
+        drawLighting(local, incoming.lighting?.rim, Math.max(0, litRim - lit), shiftX, shiftY, span);
         drawCamouflage(local, incoming, form, rim, cinematic ? 0.14 : 0.07, shiftX, shiftY, span);
       }
 
@@ -939,5 +1085,24 @@ const PhotoZoom = (() => {
     return camera;
   }
 
-  return { createTransition, geometry, render, matchPair, matchField };
+  // Share of a photo's area no longer camouflaged at a given coverage of the
+  // screen, as drawn by render (for tests).
+  function revealedShare(transition, coverage) {
+    const order = transition.order;
+    if (!order) return 1;
+    const cinematic = transition.settings.cinematicMode, zoomed = Math.log(coverage);
+    const { form, rim } = revealTiming(transition.settings, cinematic, zoomed, coverage, transition.lighting);
+    const softness = cinematic ? 0.14 : 0.07, low = form * (1 + 2 * softness) - 2 * softness;
+    let shown = 0, count = 0;
+    for (let i = 0; i < order.order.length; i++) {
+      if (order.distance[i] >= 0.5) continue;
+      const inner = form >= 1 ? 0 : smooth(low, low + 2 * softness, order.order[i]);
+      const border = smooth(order.rimStart[i], 0.5, order.distance[i]) * (1 - rim);
+      shown += 1 - (form <= 0 && rim <= 0 ? 1 : Math.max(inner, border));
+      count++;
+    }
+    return shown / count;
+  }
+
+  return { createTransition, geometry, render, matchPair, matchField, revealedShare };
 })();

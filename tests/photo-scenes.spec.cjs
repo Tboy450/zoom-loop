@@ -105,6 +105,35 @@ const server = http.createServer((req, res) => {
         console.log(`${mode}: ${profile.name} checked`);
       }
     }
+    // Photo Blend forms each photo gradually: at 5 s per photo and 30 fps no
+    // frame reveals a large piece at once, nothing is hidden again, and at
+    // small start sizes the first specks show while the photo is tiny.
+    const reveal = await page.evaluate(() => [0.01, 0.02, 0.08].map(patch => {
+      const settings = { ...getSettings(), mode: "blend", patch, size: 1080 };
+      state.portalOverrides.clear(); invalidateTransitions();
+      const step = Math.log(1 / patch) / 150;
+      const rows = state.images.map((image, pair) => {
+        const transition = getTransition(image, state.images[(pair + 1) % state.images.length], settings);
+        let previous = 0, worst = 0, firstPixels = null, decreased = false;
+        for (let zoomed = Math.log(patch * patch / 0.8); zoomed <= Math.log(1.25); zoomed += step) {
+          const coverage = Math.exp(zoomed), share = PhotoZoom.revealedShare(transition, coverage);
+          if (share < previous - 1e-6) decreased = true;
+          worst = Math.max(worst, share - previous);
+          if (firstPixels === null && share > 0.002) firstPixels = coverage * 1080;
+          previous = share;
+        }
+        return { pair, worst, firstPixels, decreased };
+      });
+      return { patch, rows };
+    }));
+    for (const { patch, rows } of reveal) {
+      for (const row of rows) {
+        assert.ok(!row.decreased, `${patch}: pair ${row.pair} hid part of the photo again`);
+        assert.ok(row.worst <= 0.025, `${patch}: pair ${row.pair} revealed ${row.worst} of the photo in one frame`);
+        if (patch <= 0.02) assert.ok(row.firstPixels <= patch * 1200, `${patch}: pair ${row.pair} first showed at ${row.firstPixels} px`);
+      }
+    }
+    console.log(JSON.stringify({ reveal: reveal.map(({ patch, rows }) => ({ patch, worstPerFrame: Math.max(...rows.map(r => r.worst)), firstPixels: Math.max(...rows.map(r => r.firstPixels)) })) }));
     const sheets = await page.evaluate(() => {
       const sheets = [];
       for (const mode of ["blend", "stitched"]) {
@@ -168,11 +197,12 @@ const server = http.createServer((req, res) => {
     const noisyContent = check => check.control && check.mean < Math.max(0.01, check.control.mean * 1.5) &&
       check.significantFraction < 0.0001;
     // When a nested photo is first drawn wider than 1024 px, Chromium changes
-    // how it filters the scaled layers: up to ~1% of pixels move by one or
-    // two levels. Every renderer version shows it on some photos, and pinning
-    // the layer canvas size does not change it. Allow exactly that, and no
-    // more: any pixel changing by 3 or more levels still fails.
-    const imperceptible = check => check.max <= 2 && check.significantFraction === 0;
+    // how it filters the scaled layers: up to ~1% of pixels move by one to
+    // three levels (three since photo borders are softened). Every renderer
+    // version shows it on some photos, and pinning the layer canvas size does
+    // not change it. Allow exactly that, and no more: any pixel changing by 4
+    // or more levels still fails.
+    const imperceptible = check => check.max <= 3 && check.significantFraction === 0;
     const accepted = check => stableRaster(check) || noisyContent(check) || imperceptible(check);
     assert.ok(rasterChecks.every(accepted), JSON.stringify(rasterChecks.filter(check => !accepted(check))));
     const featherExits = records.flatMap(record => record.checks.map(check => check.featherExit));

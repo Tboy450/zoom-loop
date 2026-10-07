@@ -4,7 +4,15 @@
 //   detailDip: how far fine detail drops around the join (a blurred box)
 //   streak:    directional bias of detail in the halo (stretched edge pixels)
 //   ghost:     both photos' fine detail visible at once inside the incoming
-//              photo (a double exposure)
+//              photo (a double exposure); rimGhost, the same in its outer band
+//   squareEdge: color jump straight across the incoming photo's border, in
+//              short segments along its sides, so a visible square scores
+//              high while ordinary texture averages out
+//   detailJump: how much sharper the inside of that border is than the
+//              outside (a crisp photo inside a soft, magnified scene)
+// ZOOM_PATCHES picks start sizes (default 0.02,0.08,0.16,0.34). Contact
+// sheets show ZOOM_SHEET_COVERAGE, the share of the screen the incoming
+// photo covers, so different start sizes show comparable stages.
 // It also times preparing each join and drawing a 1080 frame.
 const fs = require("node:fs");
 const path = require("node:path");
@@ -40,7 +48,10 @@ const server = http.createServer((req, res) => {
     const sort = process.env.ZOOM_SORT === "1";
     const sheetPatch = Number(process.env.ZOOM_SHEET_PATCH) || 0;
     const sheetTimes = process.env.ZOOM_SHEET_TIMES ? process.env.ZOOM_SHEET_TIMES.split(",").map(Number) : null;
-    const result = await page.evaluate(async ({ sort, sheetPatch, sheetTimes }) => {
+    const sheetCoverage = process.env.ZOOM_SHEET_COVERAGE ? process.env.ZOOM_SHEET_COVERAGE.split(",").map(Number) : null;
+    const patches = (process.env.ZOOM_PATCHES || "0.02,0.08,0.16,0.34").split(",").map(Number);
+    const modes = (process.env.ZOOM_MODES || "blend,stitched").split(",");
+    const result = await page.evaluate(async ({ sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes }) => {
       const size = 480;
       const base = { ...getSettings(), size };
       let order = state.images.map(image => image.name);
@@ -54,7 +65,7 @@ const server = http.createServer((req, res) => {
       const referenceCtx = reference.getContext("2d", { willReadFrequently: true });
       // Correlation of the frame's fine detail with each photo drawn alone at
       // the same camera position. A double exposure correlates with both.
-      const ghostScore = (data, from, to, camera, x0, y0, side) => {
+      const ghostScore = (data, from, to, camera, x0, y0, side, band = [0, 0.38]) => {
         referenceCtx.drawImage(from.canvas, camera.viewX, camera.viewY, camera.viewSize, camera.viewSize, 0, 0, size, size);
         const parent = referenceCtx.getImageData(0, 0, size, size).data;
         referenceCtx.fillStyle = "#000"; referenceCtx.fillRect(0, 0, size, size);
@@ -64,8 +75,10 @@ const server = http.createServer((req, res) => {
         const detail = (d, x, y) => { const i = (y * size + x) * 4, row = size * 4;
           return 4 * luma(d, i) - luma(d, i - 4) - luma(d, i + 4) - luma(d, i - row) - luma(d, i + row); };
         let fp = 0, fc = 0, ff = 0, pp = 0, cc = 0, n = 0;
-        for (let y = Math.max(1, Math.ceil(y0 + side * 0.12)); y < Math.min(size - 1, y0 + side * 0.88); y += 2) {
-          for (let x = Math.max(1, Math.ceil(x0 + side * 0.12)); x < Math.min(size - 1, x0 + side * 0.88); x += 2) {
+        for (let y = Math.max(1, Math.ceil(y0)); y < Math.min(size - 1, y0 + side); y += 2) {
+          for (let x = Math.max(1, Math.ceil(x0)); x < Math.min(size - 1, x0 + side); x += 2) {
+            const d = Math.max(Math.abs((x + 0.5 - x0) / side - 0.5), Math.abs((y + 0.5 - y0) / side - 0.5));
+            if (d < band[0] || d >= band[1]) continue;
             const f = detail(data, x, y), a = detail(parent, x, y), b = detail(child, x, y);
             fp += f * a; fc += f * b; ff += f * f; pp += a * a; cc += b * b; n++;
           }
@@ -105,6 +118,32 @@ const server = http.createServer((req, res) => {
             s.dx += Math.abs(horizontalSide ? gy : gx); s.dy += Math.abs(horizontalSide ? gx : gy);
           }
         }
+        // Jump across the photo's own border: thin bands just inside and just
+        // outside it, in six segments per side.
+        const segments = Array.from({ length: 24 }, () => ({ inside: [0, 0, 0, 0, 0], outside: [0, 0, 0, 0, 0] }));
+        for (let y = Math.max(0, Math.floor(y0 - side * 0.06)); y < Math.min(size, y0 + side * 1.06); y++) {
+          for (let x = Math.max(0, Math.floor(x0 - side * 0.06)); x < Math.min(size, x0 + side * 1.06); x++) {
+            const u = (x + 0.5 - x0) / side - 0.5, v = (y + 0.5 - y0) / side - 0.5;
+            const d = Math.max(Math.abs(u), Math.abs(v));
+            if (d < 0.44 || d > 0.56 || (d > 0.49 && d < 0.51)) continue;
+            const vertical = Math.abs(u) >= Math.abs(v);
+            const along = vertical ? v : u;
+            const segment = (vertical ? (u > 0 ? 0 : 1) : (v > 0 ? 2 : 3)) * 6 + clamp(Math.floor((along / (2 * d) + 0.5) * 6), 0, 5);
+            const band = segments[segment][d < 0.5 ? "inside" : "outside"];
+            const i = (y * size + x) * 4;
+            band[0] += data[i]; band[1] += data[i + 1]; band[2] += data[i + 2]; band[3]++;
+            if (x > 0 && y > 0 && x < size - 1 && y < size - 1) {
+              const light = j => data[j] * 0.2126 + data[j + 1] * 0.7152 + data[j + 2] * 0.0722;
+              band[4] += Math.abs(4 * light(i) - light(i - 4) - light(i + 4) - light(i - size * 4) - light(i + size * 4));
+            }
+          }
+        }
+        const jumps = segments.filter(s => s.inside[3] > 20 && s.outside[3] > 20)
+          .map(s => Math.hypot(...[0, 1, 2].map(c => s.inside[c] / s.inside[3] - s.outside[c] / s.outside[3])) / 255);
+        const squareEdge = jumps.length >= 6 ? jumps.reduce((sum, jump) => sum + jump, 0) / jumps.length : null;
+        const sharpness = segments.filter(s => s.inside[3] > 20 && s.outside[3] > 20)
+          .map(s => Math.abs(Math.log((s.inside[4] / s.inside[3] + 1) / (s.outside[4] / s.outside[3] + 1))));
+        const detailJump = sharpness.length >= 6 ? sharpness.reduce((sum, value) => sum + value, 0) / sharpness.length : null;
         let colorStep = 0, detailDip = 0, streak = 0, sectors = 0;
         for (let k = 0; k < 8; k++) {
           const series = rings.map(ring => ring.sectors[k]).map(s => s.n > 40 ? { d: 0, ...s } : null);
@@ -122,23 +161,25 @@ const server = http.createServer((req, res) => {
           if (halo.length) streak += halo.reduce((sum, s) => sum + Math.abs(Math.log((s.tangential + 0.5) / (s.radial + 0.5))), 0) / halo.length;
         }
         return sectors ? { colorStep: colorStep / sectors, detailDip: detailDip / sectors, streak: streak / sectors,
-          ghost: ghostScore(data, from, to, camera, x0, y0, side) } : null;
+          ghost: ghostScore(data, from, to, camera, x0, y0, side), rimGhost: ghostScore(data, from, to, camera, x0, y0, side, [0.38, 0.5]),
+          squareEdge, detailJump } : null;
       };
       setCanvasSize(size);
       const records = [];
-      for (const mode of ["blend", "stitched"]) {
-        for (const patch of [0.02, 0.08, 0.16, 0.34]) {
+      for (const mode of modes) {
+        for (const patch of patches) {
           const settings = { ...base, mode, patch };
           state.portalOverrides.clear(); invalidateTransitions();
           for (let pair = 0; pair < state.images.length; pair++) {
             const pairScores = [];
-            for (const t of [0.25, 0.45, 0.6, 0.72, 0.82, 0.9]) {
-              const score = measure(pair, t, settings);
+            for (const coverage of [0.15, 0.25, 0.4, 0.55, 0.7, 0.85]) {
+              const t = 1 - Math.log(0.8 * coverage) / Math.log(patch);
+              const score = t >= 0 && t < 1 ? measure(pair, t, settings) : null;
               if (score) pairScores.push(score);
             }
             const mean = key => { const values = pairScores.map(s => s[key]).filter(value => value !== null);
               return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length); };
-            records.push({ mode, patch, pair, colorStep: mean("colorStep"), detailDip: mean("detailDip"), streak: mean("streak"), ghost: mean("ghost") });
+            records.push({ mode, patch, pair, colorStep: mean("colorStep"), detailDip: mean("detailDip"), streak: mean("streak"), ghost: mean("ghost"), rimGhost: mean("rimGhost"), squareEdge: mean("squareEdge"), detailJump: mean("detailJump") });
           }
           await new Promise(resolve => setTimeout(resolve, 0));
         }
@@ -146,7 +187,7 @@ const server = http.createServer((req, res) => {
       // Preparation and drawing time at the default 1080 size.
       const timing = {};
       setCanvasSize(1080);
-      for (const mode of ["blend", "stitched"]) {
+      for (const mode of modes) {
         const settings = { ...base, mode, size: 1080 };
         state.portalOverrides.clear(); invalidateTransitions();
         let began = performance.now();
@@ -168,31 +209,40 @@ const server = http.createServer((req, res) => {
       setCanvasSize(size);
       // Contact sheet of the stretch where the join is most visible.
       const sheets = [];
-      for (const mode of ["blend", "stitched"]) {
-        const cell = 300, times = sheetTimes || [0.45, 0.6, 0.72, 0.82, 0.9];
+      for (const mode of modes) {
+        const cell = 300, times = sheetCoverage || sheetTimes || [0.45, 0.6, 0.72, 0.82, 0.9];
         const sheet = makeCanvas(cell * times.length, cell * state.images.length);
         const ctx = sheet.getContext("2d");
         const settings = { ...base, mode, size: 600, patch: sheetPatch || base.patch };
         state.portalOverrides.clear(); invalidateTransitions(); setCanvasSize(600);
-        state.images.forEach((image, row) => times.forEach((time, col) => {
-          drawTransition(image, state.images[(row + 1) % state.images.length], time, settings);
+        const count = state.images.length;
+        state.images.forEach((image, row) => times.forEach((value, col) => {
+          let segment = row, time = value;
+          if (sheetCoverage) {
+            // The incoming photo is a grandchild in the previous segment while
+            // it covers less than its start size.
+            time = 1 - Math.log(0.8 * value) / Math.log(settings.patch);
+            if (time < 0) { segment = (row + count - 1) % count; time += 1; }
+            if (time < 0) return;
+          }
+          drawTransition(state.images[segment], state.images[(segment + 1) % count], Math.min(time, 1), settings);
           ctx.drawImage(previewCanvas, col * cell, row * cell, cell, cell);
         }));
         sheets.push({ mode, data: sheet.toDataURL("image/jpeg", 0.9) });
       }
       return { order, records, sheets, timing };
-    }, { sort, sheetPatch, sheetTimes });
+    }, { sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes });
     for (const sheet of result.sheets) fs.writeFileSync(path.join(output, `seam-${label}-${sheet.mode}.jpg`), Buffer.from(sheet.data.split(",")[1], "base64"));
     delete result.sheets;
     const summary = {};
     for (const record of result.records) {
       const key = `${record.mode}@${record.patch}`;
-      summary[key] ||= { colorStep: 0, detailDip: 0, streak: 0, ghost: 0, n: 0 };
-      for (const metric of ["colorStep", "detailDip", "streak", "ghost"]) summary[key][metric] += record[metric];
+      summary[key] ||= { colorStep: 0, detailDip: 0, streak: 0, ghost: 0, rimGhost: 0, squareEdge: 0, detailJump: 0, n: 0 };
+      for (const metric of ["colorStep", "detailDip", "streak", "ghost", "rimGhost", "squareEdge", "detailJump"]) summary[key][metric] += record[metric];
       summary[key].n++;
     }
     for (const value of Object.values(summary)) {
-      for (const metric of ["colorStep", "detailDip", "streak", "ghost"]) value[metric] = +(value[metric] / value.n).toFixed(4);
+      for (const metric of ["colorStep", "detailDip", "streak", "ghost", "rimGhost", "squareEdge", "detailJump"]) value[metric] = +(value[metric] / value.n).toFixed(4);
       delete value.n;
     }
     fs.writeFileSync(path.join(output, `seam-quality-${label}.json`), JSON.stringify({ ...result, summary, errors }, null, 2));
