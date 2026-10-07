@@ -31,6 +31,9 @@ const server = http.createServer((req, res) => {
     // Fixed shuffle makes the varied selection reproducible on later runs.
     let seed = 42421;
     for (let i = photos.length - 1; i > 0; i--) { seed = (seed * 1664525 + 1013904223) >>> 0; const j = seed % (i + 1); [photos[i], photos[j]] = [photos[j], photos[i]]; }
+    // ZOOM_QUICK=1: four photos and three profiles, for fast checks between steps.
+    const quick = Boolean(process.env.ZOOM_QUICK);
+    if (quick) photos.splice(4);
     await page.locator("#fileInput").setInputFiles(photos);
     await page.waitForFunction(count => !state.isLoading && state.images.length === count, photos.length);
     console.log(`Loaded ${photos.length} detailed photos`);
@@ -46,7 +49,8 @@ const server = http.createServer((req, res) => {
     const records = [];
     for (const mode of ["blend", "stitched"]) {
       for (const profile of profiles) {
-        if (process.env.ZOOM_SCENE_PROFILES && !process.env.ZOOM_SCENE_PROFILES.split(",").includes(profile.name)) continue;
+        const only = process.env.ZOOM_SCENE_PROFILES?.split(",") || (quick ? ["default", "tiny", "large"] : null);
+        if (only && !only.includes(profile.name)) continue;
         records.push(await page.evaluate(async ({ mode, profile, crops }) => {
           const size = 720;
           const settings = { ...getSettings(), ...profile, mode, size };

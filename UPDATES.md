@@ -63,13 +63,17 @@ Auto place scores spots with a fast estimate. Rendering a few of the best spots 
 
 ## 4. Bring the improvements to Stitched World
 
-- [ ] 4.1 Measure Stitched World border scores on all three photo sets
-- [ ] 4.1b Look into one store pair at the 34% start size whose handoff differs by up to 5 levels in a few pixels, only after other drawings (also in v17)
-- [ ] 4.2 Grade the border band's light toward the surroundings (fixed, so photos stay unchanged)
-- [ ] 4.3 Use the sharp crops in Stitched World too
-- [ ] 4.4 Measure, test, push
+- [x] 4.1 Measure Stitched World border scores on all three photo sets (square edge 0.06-0.13, color step 0.07-0.16, sharpness jump 0.19-0.31 from 1% to 16%; close to Photo Blend)
+- [x] 4.1b Look into one store pair at the 34% start size whose handoff differs by up to 5 levels in a few pixels
+  - Rendered on its own the handoff matches exactly; the difference appears only after other drawings, as the browser changes how it filters canvases (also in v17). Not something the app controls; the photo test allows it and nothing more
+- [x] 4.2 Grade the border band's light toward the surroundings
+  - Tried grading it further toward the surroundings: square edge only 1-3% better, blurred-ring score 3-11% worse. Reverted; the existing light blend stays
+- [x] 4.3 Use the sharp crops in Stitched World too (done with v18/v19: drawn with each photo and used for the stitch)
+- [x] 4.4 Measure, test, push (Find Best Spots also improves Stitched World on the store photos: square edge -2/-10/-12% at 1/3/8%)
 
 ## 5. Faster preparing on phones
+
+Preparing takes about 0.3 s per join on a desktop (blurs, the texture loop and reading canvases back each take a share; the blur is already a fast running sum). On a phone that is likely 1-1.5 s per join. Speeding it up means moving the work into a background worker, a large change, so it waits for the phone timings in 3.2.
 
 - [ ] 5.1 Move the heavy pixel work (blurs, reveal order, lighting maps, surround) into a background worker
 - [ ] 5.2 Keep the app responsive and show progress while joins prepare
@@ -78,6 +82,6 @@ Auto place scores spots with a fast estimate. Rendering a few of the best spots 
 
 ## 6. Housekeeping
 
-- [ ] 6.1 Quick mode for the photo test suite (a few photos and profiles) for fast checks between steps
-- [ ] 6.2 Split the renderer into smaller files (placement, reveal, lighting, drawing)
-- [ ] 6.3 Keep README and this checklist current
+- [x] 6.1 Quick mode for the photo test suite (`ZOOM_QUICK=1`: four photos, three profiles) for fast checks between steps
+- [ ] 6.2 Split the renderer into smaller files (placement, reveal, lighting, drawing) (deferred: the parts share caches and constants, so splitting is a risky change with nothing to see for it; best done together with the worker in 5.1)
+- [x] 6.3 Keep README and this checklist current (updated with every push)
