@@ -24,14 +24,14 @@ At 1-3% start sizes the old photo is magnified up to 100x, and the app keeps onl
 - [x] 1.4 Sharper camouflage and surround: build the blend textures from the crops at small start sizes
   - [x] Each crop fades in only once it is no longer much reduced on screen (no shimmer), and stays out of the photo's softened border band
   - [x] Rebuild a join when its crops arrive
-- [ ] 1.5 Measure
+- [x] 1.5 Measure
   - [x] Add a zoom-sharpness score (fine detail late in each transition) to the seam harness
   - [x] Compare before and after on the store and mixed photo sets at 1%, 3% and 8%
     - Full-resolution store photos, crops on vs off: fine detail in the magnified scene +2% at 1%, +6% at 3%, +8% at 8% (up to +21% on single joins); blurred-ring score 7-11% better; border scores within ±5%
     - Mixed set: up to +3% (most of those photos are under 2000 pixels, so there is little extra detail to add)
     - A 12 MP original holds about 3x the working copy's detail, so at 1% the last stretch still softens
-  - [ ] Before/after video with your store photos
-- [ ] 1.6 Push and confirm live
+  - [x] Before/after video with your store photos (`zoom-loop-sharp-crops-v17-vs-v19.mp4`, 3% start, 3 s per photo; price labels and floor texture stay legible deeper into the zoom)
+- [x] 1.6 Push and confirm live (v19)
 
 ## 2. Placement that tests the actual blend
 
