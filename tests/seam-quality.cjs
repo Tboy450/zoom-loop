@@ -3,6 +3,9 @@
 //   colorStep: largest broad color change between neighbouring rings
 //   detailDip: how far fine detail drops around the join (a blurred box)
 //   streak:    directional bias of detail in the halo (stretched edge pixels)
+//   ghost:     both photos' fine detail visible at once inside the incoming
+//              photo (a double exposure)
+// It also times preparing each join and drawing a 1080 frame.
 const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
@@ -45,6 +48,29 @@ const server = http.createServer((req, res) => {
       }
       const snapshot = makeCanvas(size, size);
       const snapshotCtx = snapshot.getContext("2d", { willReadFrequently: true });
+      const reference = makeCanvas(size, size);
+      const referenceCtx = reference.getContext("2d", { willReadFrequently: true });
+      // Correlation of the frame's fine detail with each photo drawn alone at
+      // the same camera position. A double exposure correlates with both.
+      const ghostScore = (data, from, to, camera, x0, y0, side) => {
+        referenceCtx.drawImage(from.canvas, camera.viewX, camera.viewY, camera.viewSize, camera.viewSize, 0, 0, size, size);
+        const parent = referenceCtx.getImageData(0, 0, size, size).data;
+        referenceCtx.fillStyle = "#000"; referenceCtx.fillRect(0, 0, size, size);
+        referenceCtx.drawImage(to.canvas, x0, y0, side, side);
+        const child = referenceCtx.getImageData(0, 0, size, size).data;
+        const luma = (d, i) => d[i] * 0.2126 + d[i + 1] * 0.7152 + d[i + 2] * 0.0722;
+        const detail = (d, x, y) => { const i = (y * size + x) * 4, row = size * 4;
+          return 4 * luma(d, i) - luma(d, i - 4) - luma(d, i + 4) - luma(d, i - row) - luma(d, i + row); };
+        let fp = 0, fc = 0, ff = 0, pp = 0, cc = 0, n = 0;
+        for (let y = Math.max(1, Math.ceil(y0 + side * 0.12)); y < Math.min(size - 1, y0 + side * 0.88); y += 2) {
+          for (let x = Math.max(1, Math.ceil(x0 + side * 0.12)); x < Math.min(size - 1, x0 + side * 0.88); x += 2) {
+            const f = detail(data, x, y), a = detail(parent, x, y), b = detail(child, x, y);
+            fp += f * a; fc += f * b; ff += f * f; pp += a * a; cc += b * b; n++;
+          }
+        }
+        if (n < 400 || !ff || !pp || !cc) return null;
+        return Math.min(Math.max(0, fp / Math.sqrt(ff * pp)), Math.max(0, fc / Math.sqrt(ff * cc)));
+      };
       const measure = (pair, t, settings) => {
         const from = state.images[pair], to = state.images[(pair + 1) % state.images.length];
         drawTransition(from, to, t, settings);
@@ -93,7 +119,8 @@ const server = http.createServer((req, res) => {
           const halo = valid.filter(s => s.d >= 0.52 && s.d <= 0.75);
           if (halo.length) streak += halo.reduce((sum, s) => sum + Math.abs(Math.log((s.tangential + 0.5) / (s.radial + 0.5))), 0) / halo.length;
         }
-        return sectors ? { colorStep: colorStep / sectors, detailDip: detailDip / sectors, streak: streak / sectors } : null;
+        return sectors ? { colorStep: colorStep / sectors, detailDip: detailDip / sectors, streak: streak / sectors,
+          ghost: ghostScore(data, from, to, camera, x0, y0, side) } : null;
       };
       setCanvasSize(size);
       const records = [];
@@ -107,12 +134,36 @@ const server = http.createServer((req, res) => {
               const score = measure(pair, t, settings);
               if (score) pairScores.push(score);
             }
-            const mean = key => pairScores.reduce((sum, s) => sum + s[key], 0) / pairScores.length;
-            records.push({ mode, patch, pair, colorStep: mean("colorStep"), detailDip: mean("detailDip"), streak: mean("streak") });
+            const mean = key => { const values = pairScores.map(s => s[key]).filter(value => value !== null);
+              return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length); };
+            records.push({ mode, patch, pair, colorStep: mean("colorStep"), detailDip: mean("detailDip"), streak: mean("streak"), ghost: mean("ghost") });
           }
           await new Promise(resolve => setTimeout(resolve, 0));
         }
       }
+      // Preparation and drawing time at the default 1080 size.
+      const timing = {};
+      setCanvasSize(1080);
+      for (const mode of ["blend", "stitched"]) {
+        const settings = { ...base, mode, size: 1080 };
+        state.portalOverrides.clear(); invalidateTransitions();
+        let began = performance.now();
+        state.images.forEach((image, pair) => getTransition(image, state.images[(pair + 1) % state.images.length], settings));
+        const prepare = (performance.now() - began) / state.images.length;
+        const frames = [];
+        for (let pair = 0; pair < state.images.length; pair++) {
+          for (const t of [0.2, 0.5, 0.8, 0.95]) {
+            began = performance.now();
+            drawTransition(state.images[pair], state.images[(pair + 1) % state.images.length], t, settings);
+            previewCtx.getImageData(0, 0, 1, 1);
+            frames.push(performance.now() - began);
+          }
+        }
+        frames.sort((a, b) => a - b);
+        timing[mode] = { prepareMsPerJoin: Math.round(prepare), frameMsMedian: +frames[frames.length >> 1].toFixed(1), frameMsWorst: +frames.at(-1).toFixed(1) };
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      setCanvasSize(size);
       // Contact sheet of the stretch where the join is most visible.
       const sheets = [];
       for (const mode of ["blend", "stitched"]) {
@@ -127,22 +178,22 @@ const server = http.createServer((req, res) => {
         }));
         sheets.push({ mode, data: sheet.toDataURL("image/jpeg", 0.9) });
       }
-      return { order, records, sheets };
+      return { order, records, sheets, timing };
     }, { sort });
     for (const sheet of result.sheets) fs.writeFileSync(path.join(output, `seam-${label}-${sheet.mode}.jpg`), Buffer.from(sheet.data.split(",")[1], "base64"));
     delete result.sheets;
     const summary = {};
     for (const record of result.records) {
       const key = `${record.mode}@${record.patch}`;
-      summary[key] ||= { colorStep: 0, detailDip: 0, streak: 0, n: 0 };
-      for (const metric of ["colorStep", "detailDip", "streak"]) summary[key][metric] += record[metric];
+      summary[key] ||= { colorStep: 0, detailDip: 0, streak: 0, ghost: 0, n: 0 };
+      for (const metric of ["colorStep", "detailDip", "streak", "ghost"]) summary[key][metric] += record[metric];
       summary[key].n++;
     }
     for (const value of Object.values(summary)) {
-      for (const metric of ["colorStep", "detailDip", "streak"]) value[metric] = +(value[metric] / value.n).toFixed(4);
+      for (const metric of ["colorStep", "detailDip", "streak", "ghost"]) value[metric] = +(value[metric] / value.n).toFixed(4);
       delete value.n;
     }
     fs.writeFileSync(path.join(output, `seam-quality-${label}.json`), JSON.stringify({ ...result, summary, errors }, null, 2));
-    console.log(JSON.stringify({ label, order: result.order, summary, errors }, null, 1));
+    console.log(JSON.stringify({ label, summary, timing: result.timing, errors }));
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => server.close());

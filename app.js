@@ -79,7 +79,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v12";
+const ASSET_VERSION = "v13";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -311,6 +311,7 @@ function transitionKey(fromId, toId, settings, override) {
 }
 
 function invalidateTransitions() {
+  for (const transition of state.transitions.values()) transition.release?.();
   state.transitions.clear();
 }
 
@@ -324,7 +325,10 @@ function getPortalOverride(fromId, toId) {
 
 function invalidatePair(fromId, toId) {
   for (const key of state.transitions.keys()) {
-    if (key.startsWith(`${fromId}:${toId}:`)) state.transitions.delete(key);
+    if (key.startsWith(`${fromId}:${toId}:`)) {
+      state.transitions.get(key).release?.();
+      state.transitions.delete(key);
+    }
   }
 }
 
@@ -919,7 +923,7 @@ function clearImages() {
     if (image.url.startsWith("blob:")) URL.revokeObjectURL(image.url);
   });
   state.images = [];
-  state.transitions.clear();
+  invalidateTransitions();
   state.portalOverrides.clear();
   state.isPickingPortal = false;
   state.progress = 0;

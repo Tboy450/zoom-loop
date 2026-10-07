@@ -8,6 +8,14 @@ const PhotoZoom = (() => {
   const SPAN = 1 + HALO * 2;
   const FRAME = 0.8;
   const MAX_LAYER = 4096;
+  // Photo Blend reveal timing, in coverage of the screen (see render). The
+  // middle of a photo reveals over REVEAL_SPAN (a longer, dreamier dissolve
+  // in cinematic mode); its rim, from RIM_START outward, over RIM_SPAN.
+  const REVEAL_SPAN = 0.28;
+  const CINEMATIC_REVEAL_SPAN = 0.5;
+  const RIM_SPAN = 0.74;
+  const RIM_START = 0.22;
+  const LIGHT_DELAY = 0.1;
   const analysisCache = new WeakMap();
   const extensionCache = new WeakMap();
   const layers = [];
@@ -163,30 +171,36 @@ const PhotoZoom = (() => {
     const texture = new Float32Array(64);
     const edges = new Float32Array(112);
     const mean = [0, 0, 0];
-    const integralAt = (c, u, v) => {
-      const px = clamp(u * data.width, 0, data.width), py = clamp(v * data.height, 0, data.height);
-      const ix = Math.floor(px), iy = Math.floor(py);
-      const nx = Math.min(ix + 1, data.width), ny = Math.min(iy + 1, data.height);
-      const stride = data.width + 1, sum = data.integrals[c];
-      return mix(mix(sum[iy * stride + ix], sum[iy * stride + nx], px - ix),
-        mix(sum[ny * stride + ix], sum[ny * stride + nx], px - ix), py - iy);
-    };
+    // Interpolated summed-area values at the 9 × 9 cell corners, shared by
+    // neighbouring cells, for red, green, blue and squared light.
+    const corners = new Float64Array(81 * 4);
+    const stride = data.width + 1;
+    for (let j = 0; j <= 8; j++) {
+      const py = clamp((y + j / 8 * width) * data.height, 0, data.height);
+      const iy = Math.floor(py), ny = Math.min(iy + 1, data.height), fy = py - iy;
+      for (let i = 0; i <= 8; i++) {
+        const px = clamp((x + i / 8 * width) * data.width, 0, data.width);
+        const ix = Math.floor(px), nx = Math.min(ix + 1, data.width), fx = px - ix;
+        for (let c = 0; c < 4; c++) {
+          const sum = data.integrals[c];
+          corners[(j * 9 + i) * 4 + c] = mix(mix(sum[iy * stride + ix], sum[iy * stride + nx], fx),
+            mix(sum[ny * stride + ix], sum[ny * stride + nx], fx), fy);
+        }
+      }
+    }
+    const area = (width / 8) ** 2 * data.width * data.height;
     let edgeIndex = 0;
     for (let row = 0; row < 8; row++) {
       for (let col = 0; col < 8; col++) {
-        const left = x + col / 8 * width, top = y + row / 8 * width;
-        const right = left + width / 8, bottom = top + width / 8;
-        const area = (right - left) * (bottom - top) * data.width * data.height;
-        const average = c => (integralAt(c, right, bottom) - integralAt(c, left, bottom) -
-          integralAt(c, right, top) + integralAt(c, left, top)) / area;
-        const r = average(0), g = average(1), b = average(2);
-        const light = r * 0.2126 + g * 0.7152 + b * 0.0722;
-        const components = [light / 255, (r - light) / 255, (b - light) / 255];
+        const a = (row * 9 + col) * 4, b = a + 4, c0 = a + 36, d = a + 40;
+        const average = c => (corners[d + c] - corners[c0 + c] - corners[b + c] + corners[a + c]) / area;
+        const r = average(0), g = average(1), bl = average(2);
+        const light = r * 0.2126 + g * 0.7152 + bl * 0.0722;
         const index = row * 8 + col;
-        for (let c = 0; c < 3; c++) {
-          values[index * 3 + c] = components[c];
-          mean[c] += components[c] / 64;
-        }
+        values[index * 3] = light / 255;
+        values[index * 3 + 1] = (r - light) / 255;
+        values[index * 3 + 2] = (bl - light) / 255;
+        for (let c = 0; c < 3; c++) mean[c] += values[index * 3 + c] / 64;
         texture[index] = Math.sqrt(Math.max(0, average(3) - light * light)) / 255;
         if (col) edges[edgeIndex++] = values[index * 3] - values[(index - 1) * 3];
         if (row) edges[edgeIndex++] = values[index * 3] - values[(index - 8) * 3];
@@ -385,34 +399,48 @@ const PhotoZoom = (() => {
 
   // A separable low-pass separates illumination/color from photo detail.
   // Unlike multiplying RGB by the parent, this retains detail in dark photos.
+  // Box blur with edge clamping: one sweep per row for all three channels,
+  // then running column sums row by row, which reads memory in order.
   function lowPass(image, radius) {
     const { width: size, data } = image;
     const horizontal = new Float32Array(size * size * 3);
     const result = new Float32Array(horizontal.length);
-    const count = radius * 2 + 1;
+    const count = radius * 2 + 1, last = size - 1;
     for (let y = 0; y < size; y++) {
-      for (let c = 0; c < 3; c++) {
-        let sum = 0;
-        for (let k = -radius; k <= radius; k++) sum += data[(y * size + clamp(k, 0, size - 1)) * 4 + c];
-        for (let x = 0; x < size; x++) {
-          horizontal[(y * size + x) * 3 + c] = sum / count;
-          sum += data[(y * size + clamp(x + radius + 1, 0, size - 1)) * 4 + c] -
-            data[(y * size + clamp(x - radius, 0, size - 1)) * 4 + c];
-        }
+      const row = y * size;
+      let r = 0, g = 0, b = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const i = (row + (k < 0 ? 0 : k > last ? last : k)) * 4;
+        r += data[i]; g += data[i + 1]; b += data[i + 2];
+      }
+      for (let x = 0; x < size; x++) {
+        const o = (row + x) * 3;
+        horizontal[o] = r / count; horizontal[o + 1] = g / count; horizontal[o + 2] = b / count;
+        const add = x + radius + 1, remove = x - radius;
+        const a = (row + (add > last ? last : add)) * 4, d = (row + (remove < 0 ? 0 : remove)) * 4;
+        r += data[a] - data[d]; g += data[a + 1] - data[d + 1]; b += data[a + 2] - data[d + 2];
       }
     }
-    for (let x = 0; x < size; x++) {
-      for (let c = 0; c < 3; c++) {
-        let sum = 0;
-        for (let k = -radius; k <= radius; k++) sum += horizontal[(clamp(k, 0, size - 1) * size + x) * 3 + c];
-        for (let y = 0; y < size; y++) {
-          result[(y * size + x) * 3 + c] = sum / count;
-          sum += horizontal[(clamp(y + radius + 1, 0, size - 1) * size + x) * 3 + c] -
-            horizontal[(clamp(y - radius, 0, size - 1) * size + x) * 3 + c];
-        }
+    const stride = size * 3, sums = new Float64Array(stride);
+    for (let k = -radius; k <= radius; k++) {
+      const source = (k < 0 ? 0 : k > last ? last : k) * stride;
+      for (let i = 0; i < stride; i++) sums[i] += horizontal[source + i];
+    }
+    for (let y = 0; y < size; y++) {
+      const target = y * stride, add = y + radius + 1, remove = y - radius;
+      const addRow = (add > last ? last : add) * stride, removeRow = (remove < 0 ? 0 : remove) * stride;
+      for (let i = 0; i < stride; i++) {
+        result[target + i] = sums[i] / count;
+        sums[i] += horizontal[addRow + i] - horizontal[removeRow + i];
       }
     }
     return result;
+  }
+
+  // iOS Safari reclaims canvas memory late and fails once its total is
+  // exceeded, so a discarded join frees its own canvases straight away.
+  function releaseCanvases(...items) {
+    for (const item of items) if (item) item.width = item.height = 0;
   }
 
   function createTransition(parent, child, requested, override) {
@@ -435,19 +463,20 @@ const PhotoZoom = (() => {
     drawExtended(patchCtx, parent, -(portal.x - portal.size * HALO) * parentScale,
       -(portal.y - portal.size * HALO) * parentScale, parentScale);
     const parentData = patchCtx.getImageData(0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
-    const childExtension = extension(child);
     const childSource = canvas(TEXTURE_SIZE);
     const childCtx = childSource.getContext("2d", { willReadFrequently: true });
     drawExtended(childCtx, child, TEXTURE_SIZE * HALO / SPAN, TEXTURE_SIZE * HALO / SPAN, TEXTURE_SIZE / SPAN);
     const childData = childCtx.getImageData(0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
     if (settings.mode === "stitched") {
       // Stitched World keeps every photo's own colors throughout.
-      return { ...createStitchedTransition(parentData, childData, childExtension, settings, portal), placement };
+      const stitched = { ...createStitchedTransition(parentData, childData, extension(child), settings, portal), placement };
+      // The extension is cached per photo and shared, so it is not released.
+      return { ...stitched, release: () => releaseCanvases(stitched.stitch, stitched.cutout) };
     }
-    const grade = createGrade(parentData, childData, settings);
     const radius = Math.round(18 + settings.sampleBlend * 38);
     const parentLow = lowPass(parentData, radius);
     const childLow = lowPass(childData, radius);
+    const lighting = createLighting(parentLow, childLow, settings);
     const texture = canvas(TEXTURE_SIZE);
     const ctx = texture.getContext("2d");
     const embedded = ctx.createImageData(TEXTURE_SIZE, TEXTURE_SIZE);
@@ -499,85 +528,101 @@ const PhotoZoom = (() => {
     }
     ctx.putImageData(embedded, 0, 0);
     cutoutCtx.putImageData(mask, 0, 0);
-    const surround = createSurround(parentData, childData, settings);
-    return { settings, rect: portal, texture, cutout, extension: surround, placement, grade };
+    // The same camouflage, transparent in the middle of the photo. It keeps
+    // the photo's edge hidden on the slow schedule while the middle shows.
+    const rim = canvas(TEXTURE_SIZE);
+    const rimCtx = rim.getContext("2d");
+    for (let y = 0; y < TEXTURE_SIZE; y++) {
+      for (let x = 0; x < TEXTURE_SIZE; x++) {
+        const u = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO, v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
+        embedded.data[(y * TEXTURE_SIZE + x) * 4 + 3] = 255 * smooth(RIM_START, 0.5, Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5)));
+      }
+    }
+    rimCtx.putImageData(embedded, 0, 0);
+    const surround = createSurround(parentData, childData, settings, { radius, parent: parentLow, child: childLow });
+    return { settings, rect: portal, texture, rim, cutout, extension: surround, placement, lighting,
+      release: () => releaseCanvases(texture, rim, cutout, surround, lighting?.darken, lighting?.brighten, lighting?.lift) };
   }
 
-  function createGrade(parent, child, settings) {
-    // Match the incoming photo's overall color to the area it replaces while
-    // it is small, then relax to its true color as it fills the screen. The
-    // grade is uniform across the photo, so it cannot draw an inner frame,
-    // and fades out across the halo along with the lighting handoff.
-    const mean = data => {
-      const sum = [0, 0, 0];
-      let count = 0;
-      for (let y = 2; y < TEXTURE_SIZE; y += 4) {
-        for (let x = 2; x < TEXTURE_SIZE; x += 4) {
-          const u = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO, v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
-          if (u < 0 || u > 1 || v < 0 || v > 1) continue;
-          const i = (y * TEXTURE_SIZE + x) * 4;
-          for (let c = 0; c < 3; c++) sum[c] += data.data[i + c];
-          count++;
+  function createLighting(parentLow, childLow, settings) {
+    // Local lighting match for the incoming photo: a gain per region that
+    // gives it the light and color of the area it replaces while keeping
+    // its own sharp detail. The renderer relaxes it to the photo's true
+    // lighting before the handoff. Darkening uses multiply and brightening
+    // color-dodge, which scale pixels and so keep the photo's contrast. A
+    // scale cannot lift black, so whatever brightening remains past the
+    // largest gain comes from screen, which raises shadows.
+    const size = 80, reach = mix(0.32, 0.5, settings.edgeBlend);
+    const maps = [canvas(size), canvas(size), canvas(size)];
+    const contexts = maps.map(map => map.getContext("2d"));
+    const [down, up, lift] = contexts.map(ctx => ctx.createImageData(size, size));
+    let largest = 0;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const u = (x + 0.5) / size * SPAN - HALO, v = (y + 0.5) / size * SPAN - HALO;
+        // Full strength on the photo, fading out with the halo's handoff.
+        const weight = 1 - smooth(0, reach, Math.hypot(Math.max(0, -u, u - 1), Math.max(0, -v, v - 1)));
+        const k = (Math.min(TEXTURE_SIZE - 1, Math.floor((y + 0.5) / size * TEXTURE_SIZE)) * TEXTURE_SIZE +
+          Math.min(TEXTURE_SIZE - 1, Math.floor((x + 0.5) / size * TEXTURE_SIZE))) * 3;
+        const i = (y * size + x) * 4;
+        for (let c = 0; c < 3; c++) {
+          const target = parentLow[k + c] / 255, source = childLow[k + c] / 255;
+          const ratio = clamp((target + 0.03) / (source + 0.03), 0.4, 4);
+          const gain = Math.min(ratio, 2);
+          const scaled = Math.min(1, source * Math.max(1, gain));
+          const raise = ratio > 1 ? clamp((target - scaled) / Math.max(0.02, 1 - scaled), 0, 1) : 0;
+          const weighted = 1 + (gain - 1) * weight;
+          largest = Math.max(largest, Math.abs(weighted - 1), raise * weight);
+          down.data[i + c] = 255 * Math.min(1, weighted);
+          // color-dodge divides by (1 - source), so this gives x * gain.
+          up.data[i + c] = 255 * Math.max(0, 1 - 1 / weighted);
+          lift.data[i + c] = 255 * raise * weight;
         }
+        down.data[i + 3] = up.data[i + 3] = lift.data[i + 3] = 255;
       }
-      return sum.map(value => value / count / 255);
-    };
-    const target = mean(parent), source = mean(child);
-    const gains = target.map((value, c) => clamp((value + 0.03) / (source[c] + 0.03), 0.45, 2.2));
-    if (gains.every(gain => Math.abs(gain - 1) < 0.02)) return null;
-    // Darkening uses multiply; brightening uses screen, sized so the mean of
-    // each channel lands where the gain would put it.
-    const multiply = gains.map(gain => Math.min(1, gain));
-    const screen = gains.map((gain, c) => gain <= 1 ? 0 : clamp((gain - 1) * source[c] / Math.max(0.04, 1 - source[c]), 0, 1));
-    const size = 64, reach = mix(0.32, 0.5, settings.edgeBlend);
-    const layers = [multiply, screen].map((color, layer) => {
-      const result = canvas(size);
-      const ctx = result.getContext("2d");
-      const image = ctx.createImageData(size, size);
-      for (let y = 0; y < size; y++) {
-        for (let x = 0; x < size; x++) {
-          const u = (x + 0.5) / size * SPAN - HALO, v = (y + 0.5) / size * SPAN - HALO;
-          const weight = 1 - smooth(0, reach, Math.hypot(Math.max(0, -u, u - 1), Math.max(0, -v, v - 1)));
-          const i = (y * size + x) * 4;
-          for (let c = 0; c < 3; c++) image.data[i + c] = 255 * (layer ? color[c] * weight : 1 - (1 - color[c]) * weight);
-          image.data[i + 3] = 255;
-        }
-      }
-      ctx.putImageData(image, 0, 0);
-      return result;
-    });
-    return { multiply: layers[0], screen: layers[1], strength: 0.7 * settings.bind };
+    }
+    if (largest < 0.02) return null;
+    [down, up, lift].forEach((image, index) => contexts[index].putImageData(image, 0, 0));
+    return { darken: maps[0], brighten: maps[1], lift: maps[2], strength: 0.9 * settings.bind };
   }
 
-  function createSurround(parent, child, settings) {
+  function createSurround(parent, child, settings, broad) {
     // Backing for a growing photo: the photo itself inside its edge, then a
     // multiband handoff to the parent's own material. Fine texture switches
     // to the parent almost at the edge, while lighting and color grade over
     // the whole feather, so the join shows neither a blur ring nor mirrored
-    // copies of the incoming photo.
-    const radii = [3, 14, 48];
-    const parentBands = radii.map(radius => lowPass(parent, radius));
-    const childBands = radii.map(radius => lowPass(child, radius));
-    const reach = [0.03, 0.08, 0.18, mix(0.32, 0.5, settings.edgeBlend)];
+    // copies of the incoming photo. The broadest band reuses the blur the
+    // color match already computed.
+    const parentBands = [lowPass(parent, 3), lowPass(parent, Math.min(14, broad.radius)), broad.parent];
+    const childBands = [lowPass(child, 3), lowPass(child, Math.min(14, broad.radius)), broad.child];
+    const [r0, r1, r2, r3] = [0.03, 0.08, 0.18, mix(0.32, 0.5, settings.edgeBlend)];
     const result = canvas(TEXTURE_SIZE);
     const ctx = result.getContext("2d");
     const out = ctx.createImageData(TEXTURE_SIZE, TEXTURE_SIZE);
+    const [p0, p1, p2] = parentBands, [c0, c1, c2] = childBands;
     for (let y = 0; y < TEXTURE_SIZE; y++) {
+      const v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
+      const dy = Math.max(0, -v, v - 1);
       for (let x = 0; x < TEXTURE_SIZE; x++) {
         const pixel = y * TEXTURE_SIZE + x;
-        const u = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO, v = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
-        const outside = Math.hypot(Math.max(0, -u, u - 1), Math.max(0, -v, v - 1));
-        const weights = reach.map(r => smooth(0, r, outside));
-        for (let c = 0; c < 3; c++) {
-          const i = pixel * 4 + c, k = pixel * 3 + c;
-          if (outside <= 0) { out.data[i] = child.data[i]; continue; }
-          out.data[i] =
-            mix(child.data[i] - childBands[0][k], parent.data[i] - parentBands[0][k], weights[0]) +
-            mix(childBands[0][k] - childBands[1][k], parentBands[0][k] - parentBands[1][k], weights[1]) +
-            mix(childBands[1][k] - childBands[2][k], parentBands[1][k] - parentBands[2][k], weights[2]) +
-            mix(childBands[2][k], parentBands[2][k], weights[3]);
+        const u = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO;
+        const dx = Math.max(0, -u, u - 1);
+        const i = pixel * 4;
+        out.data[i + 3] = 255;
+        if (!dx && !dy) {
+          out.data[i] = child.data[i]; out.data[i + 1] = child.data[i + 1]; out.data[i + 2] = child.data[i + 2];
+          continue;
         }
-        out.data[pixel * 4 + 3] = 255;
+        const outside = Math.hypot(dx, dy);
+        const w0 = smooth(0, r0, outside), w1 = smooth(0, r1, outside), w2 = smooth(0, r2, outside), w3 = smooth(0, r3, outside);
+        for (let c = 0; c < 3; c++) {
+          const k = pixel * 3 + c;
+          out.data[i + c] =
+            mix(child.data[i + c] - c0[k], parent.data[i + c] - p0[k], w0) +
+            mix(c0[k] - c1[k], p0[k] - p1[k], w1) +
+            mix(c1[k] - c2[k], p1[k] - p2[k], w2) +
+            mix(c2[k], p2[k], w3);
+        }
       }
     }
     ctx.putImageData(out, 0, 0);
@@ -735,7 +780,18 @@ const PhotoZoom = (() => {
       const insetX = core * HALO + shiftX, insetY = core * HALO + shiftY;
       const coverage = projectedSize / outputSize;
       const stitched = settings.mode === "stitched";
-      const reveal = stitched ? 1 : smooth(incoming.settings.cinematicMode ? 0.2 : 0.16, 0.9, coverage);
+      // Photo Blend reveals in two stages. The camouflage, which carries the
+      // parent's structure, gives way while the photo is still small; a long
+      // crossfade of two structures read as a double exposure. The photo's
+      // own detail then shows lit like its surroundings, and its true
+      // lighting returns well before it fills the screen, so the handoff to
+      // the next segment stays pixel-identical.
+      const revealStart = incoming.settings.cinematicMode ? 0.2 : 0.16;
+      const reveal = stitched ? 1 : smooth(revealStart, revealStart +
+        (incoming.settings.cinematicMode ? CINEMATIC_REVEAL_SPAN : REVEAL_SPAN), coverage);
+      const rimReveal = stitched ? 1 : smooth(revealStart, revealStart + RIM_SPAN, coverage);
+      const lit = stitched || !incoming.lighting ? 0 :
+        incoming.lighting.strength * (1 - smooth(revealStart + LIGHT_DELAY, 0.9, coverage));
       local.clearRect(0, 0, layer.width, layer.height);
       local.imageSmoothingEnabled = true;
       // Bilinear filtering stays consistent when a photo crosses 1:1 scale.
@@ -744,27 +800,27 @@ const PhotoZoom = (() => {
       // Blend broad color and fine detail separately: an abrupt change from
       // a sharp photograph to a soft extension would itself reveal a box.
       local.drawImage(incoming.extension, shiftX, shiftY, span, span);
-      // Relaxes to the photo's own color well before it fills the screen,
-      // so the handoff to the next segment stays pixel-identical.
-      const grade = incoming.grade ? incoming.grade.strength * (1 - smooth(0.12, 0.85, coverage)) : 0;
-      const applyGrade = () => {
-        if (grade < 0.004) return;
-        local.globalAlpha = grade;
-        local.globalCompositeOperation = "multiply";
-        local.drawImage(incoming.grade.multiply, shiftX, shiftY, span, span);
-        local.globalCompositeOperation = "screen";
-        local.drawImage(incoming.grade.screen, shiftX, shiftY, span, span);
-        local.globalCompositeOperation = "source-over";
-        local.globalAlpha = 1;
-      };
       if (stitched) {
         drawProjectedPhoto(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize);
         local.drawImage(incoming.stitch, shiftX, shiftY, span, span);
       } else {
         drawPhotoDetail(local, images[index % images.length].canvas, insetX, insetY, core, globalX, globalY, outputSize);
-        applyGrade();
+        if (lit > 0.004) {
+          local.globalAlpha = lit;
+          local.globalCompositeOperation = "multiply";
+          local.drawImage(incoming.lighting.darken, shiftX, shiftY, span, span);
+          local.globalCompositeOperation = "color-dodge";
+          local.drawImage(incoming.lighting.brighten, shiftX, shiftY, span, span);
+          local.globalCompositeOperation = "screen";
+          local.drawImage(incoming.lighting.lift, shiftX, shiftY, span, span);
+          local.globalCompositeOperation = "source-over";
+        }
         local.globalAlpha = 1 - reveal;
         local.drawImage(incoming.texture, shiftX, shiftY, span, span);
+        if (rimReveal < 1 && incoming.rim) {
+          local.globalAlpha = 1 - rimReveal;
+          local.drawImage(incoming.rim, shiftX, shiftY, span, span);
+        }
       }
       local.globalAlpha = 1;
 

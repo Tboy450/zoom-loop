@@ -310,6 +310,21 @@ const server = http.createServer((req, res) => {
       return { deterministic: frames[1] === frames[4], count: state.transitions.size };
     });
     assert.ok(scrub.deterministic, "Scrubbing must not depend on playback history");
+    // Discarded joins free their canvases (iOS reclaims canvas memory late),
+    // but never the per-photo extension that other joins share.
+    const released = await page.evaluate(() => ["blend", "stitched"].map(mode => {
+      const settings = { ...getSettings(), mode };
+      const before = getTransition(state.images[0], state.images[1], settings);
+      const owned = mode === "blend" ? [before.texture, before.rim, before.cutout, before.extension] : [before.stitch, before.cutout];
+      invalidateTransitions();
+      const after = getTransition(state.images[0], state.images[1], settings);
+      drawTransition(state.images[0], state.images[1], 0.5, settings);
+      return { mode, freed: owned.every(item => item.width === 0), fresh: (after.texture || after.stitch).width,
+        sharedKept: mode === "blend" || after.extension === before.extension && after.extension.width > 0 };
+    }));
+    for (const check of released) {
+      assert.ok(check.freed && check.fresh > 0 && check.sharedKept, JSON.stringify(check));
+    }
     for (const button of ["#autoSortButton", "#autoTuneButton", "#autoCinematicButton", "#smoothDefaultsButton"]) {
       const ids = await page.evaluate(() => state.images.map(image => image.id).sort());
       await page.locator(button).click();
@@ -442,8 +457,8 @@ const server = http.createServer((req, res) => {
     await page.evaluate(() => navigator.serviceWorker.ready);
     await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
     const cacheReady = await page.evaluate(async () => {
-      const cache = await caches.open("zoom-loop-v12");
-      return Boolean(await cache.match("./zoom-renderer.js?v12"));
+      const cache = await caches.open("zoom-loop-v13");
+      return Boolean(await cache.match("./zoom-renderer.js?v13"));
     });
     assert.equal(cacheReady, true);
     await page.context().setOffline(true);
