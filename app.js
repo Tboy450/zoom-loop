@@ -81,7 +81,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v18";
+const ASSET_VERSION = "v19";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -319,6 +319,14 @@ function transitionKey(fromId, toId, settings, override) {
 function invalidateTransitions() {
   for (const transition of state.transitions.values()) transition.release?.();
   state.transitions.clear();
+}
+
+function invalidateTransitionsFrom(image) {
+  for (const [key, transition] of state.transitions) {
+    if (!key.startsWith(`${image.id}:`)) continue;
+    transition.release?.();
+    state.transitions.delete(key);
+  }
 }
 
 function getPairKey(fromId, toId) {
@@ -1065,6 +1073,8 @@ async function prepareSharpCrops(from, to, settings) {
     // The spot may have moved again while the original was decoding.
     if (from.detailKey !== key) return false;
     PhotoZoom.setDetail(from.canvas, crops);
+    // Its joins sample the crops for their blend textures: rebuild them.
+    invalidateTransitionsFrom(from);
     return Boolean(crops);
   } catch {
     from.detailKey = null;

@@ -21,10 +21,15 @@ At 1-3% start sizes the old photo is magnified up to 100x, and the app keeps onl
   - [x] Find each spot, build its crops, then prepare the join, all during "Preparing"
   - [x] When scrubbing without preparing, build crops in the background and redraw
   - [x] Free crops when a spot moves or photos change
-- [ ] 1.4 Sharper camouflage and surround: build the blend textures from the crops at small start sizes
+- [x] 1.4 Sharper camouflage and surround: build the blend textures from the crops at small start sizes
+  - [x] Each crop fades in only once it is no longer much reduced on screen (no shimmer), and stays out of the photo's softened border band
+  - [x] Rebuild a join when its crops arrive
 - [ ] 1.5 Measure
-  - [ ] Add a zoom-sharpness score (fine detail late in each transition) to the seam harness
-  - [ ] Compare before and after on the store and mixed photo sets at 1%, 3% and 8%
+  - [x] Add a zoom-sharpness score (fine detail late in each transition) to the seam harness
+  - [x] Compare before and after on the store and mixed photo sets at 1%, 3% and 8%
+    - Full-resolution store photos, crops on vs off: fine detail in the magnified scene +2% at 1%, +6% at 3%, +8% at 8% (up to +21% on single joins); blurred-ring score 7-11% better; border scores within ±5%
+    - Mixed set: up to +3% (most of those photos are under 2000 pixels, so there is little extra detail to add)
+    - A 12 MP original holds about 3x the working copy's detail, so at 1% the last stretch still softens
   - [ ] Before/after video with your store photos
 - [ ] 1.6 Push and confirm live
 
@@ -49,7 +54,7 @@ Auto place scores spots with a fast estimate. Rendering a few of the best spots 
 ## 4. Bring the improvements to Stitched World
 
 - [ ] 4.1 Measure Stitched World border scores on all three photo sets
-- [ ] 4.1b Look into one store pair at the 34% start size whose handoff differs by 4 levels in a few pixels (also in v17)
+- [ ] 4.1b Look into one store pair at the 34% start size whose handoff differs by up to 5 levels in a few pixels, only after other drawings (also in v17)
 - [ ] 4.2 Grade the border band's light toward the surroundings (fixed, so photos stay unchanged)
 - [ ] 4.3 Use the sharp crops in Stitched World too
 - [ ] 4.4 Measure, test, push

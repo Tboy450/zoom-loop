@@ -141,34 +141,40 @@ const PhotoZoom = (() => {
     drawSharpCrops(ctx, source, x, y, core, offsetX, offsetY, outputSize);
   }
 
-  // Sharp crops of a photo's original (see setDetail). They show once the
-  // 1024 working copy is magnified enough to look soft (1.6x, fully by 2.6x).
-  // They are drawn the same way whether the photo is on its own or nested,
-  // so handoffs stay pixel-identical even at sizes where a photo filling the
-  // screen already shows them.
+  // Sharp crops of a photo's original (see setDetail), drawn over the 1024
+  // working copy. Each fades in once it is no longer much reduced on screen
+  // (from 0.55 to 0.85 screen pixels per crop pixel), so the wide crop
+  // shows first and the close one later, without the shimmer of a shrunken
+  // image. Crops stay out of the photo's border band, which is softened for
+  // the join and never seen once the photo fills the screen. They are drawn
+  // the same way whether the photo is on its own or nested, so handoffs stay
+  // pixel-identical.
   const sharpCrops = new WeakMap();
-  let cropFeather;
+  const CROP_BAND = [0.36, 0.4];
   function setDetail(source, crops) {
     const previous = sharpCrops.get(source);
     if (previous) releaseCanvases(...previous.map(crop => crop.canvas));
     if (!crops) { sharpCrops.delete(source); return; }
-    if (!cropFeather) {
-      // Fades over the outer fifth, so sharpness changes gradually.
-      cropFeather = canvas(64);
-      const featherCtx = cropFeather.getContext("2d");
-      const mask = featherCtx.createImageData(64, 64);
-      for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
-        mask.data[(y * 64 + x) * 4 + 3] = 255 * smooth(0, 0.2, Math.min(x + 0.5, y + 0.5, 63.5 - x, 63.5 - y) / 64);
-      }
-      featherCtx.putImageData(mask, 0, 0);
-    }
     for (const crop of crops) {
+      // Fades over the crop's outer fifth, so sharpness changes gradually.
+      const mask = canvas(64), maskCtx = mask.getContext("2d");
+      const pixels = maskCtx.createImageData(64, 64);
+      for (let y = 0; y < 64; y++) {
+        for (let x = 0; x < 64; x++) {
+          const edge = smooth(0, 0.2, Math.min(x + 0.5, y + 0.5, 63.5 - x, 63.5 - y) / 64);
+          const u = crop.x + (x + 0.5) / 64 * crop.size, v = crop.y + (y + 0.5) / 64 * crop.size;
+          const band = 1 - smooth(CROP_BAND[0], CROP_BAND[1], Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5)));
+          pixels.data[(y * 64 + x) * 4 + 3] = 255 * edge * band;
+        }
+      }
+      maskCtx.putImageData(pixels, 0, 0);
       const cropCtx = crop.canvas.getContext("2d");
       // The crop may still carry the transform it was cut with.
       cropCtx.setTransform(1, 0, 0, 1, 0, 0);
       cropCtx.globalCompositeOperation = "destination-in";
-      cropCtx.drawImage(cropFeather, 0, 0, crop.canvas.width, crop.canvas.height);
+      cropCtx.drawImage(mask, 0, 0, crop.canvas.width, crop.canvas.height);
       cropCtx.globalCompositeOperation = "source-over";
+      releaseCanvases(mask);
     }
     // Widest first, so the closest, sharpest crop ends on top.
     sharpCrops.set(source, [...crops].sort((a, b) => b.size - a.size));
@@ -177,10 +183,10 @@ const PhotoZoom = (() => {
   function drawSharpCrops(ctx, source, x, y, core, offsetX, offsetY, outputSize) {
     const crops = sharpCrops.get(source);
     if (!crops) return;
-    const alpha = smooth(1.6, 2.6, core / source.width);
-    if (alpha <= 0) return;
-    ctx.globalAlpha = alpha;
     for (const crop of crops) {
+      const alpha = smooth(0.55, 0.85, crop.size * core / crop.canvas.width);
+      if (alpha <= 0) continue;
+      ctx.globalAlpha = alpha;
       drawProjectedPhoto(ctx, crop.canvas, x + crop.x * core, y + crop.y * core, crop.size * core, offsetX, offsetY, outputSize);
     }
     ctx.globalAlpha = 1;
@@ -587,6 +593,11 @@ const PhotoZoom = (() => {
     const parentScale = TEXTURE_SIZE / (portal.size * SPAN);
     drawExtended(patchCtx, parent, -(portal.x - portal.size * HALO) * parentScale,
       -(portal.y - portal.size * HALO) * parentScale, parentScale);
+    // At small start sizes this area is a few dozen pixels of the working
+    // copy; the sharp crops let the camouflage and surround match the
+    // sharpened scene around them.
+    drawSharpCrops(patchCtx, parent, -(portal.x - portal.size * HALO) * parentScale,
+      -(portal.y - portal.size * HALO) * parentScale, parentScale, 0, 0, TEXTURE_SIZE);
     const parentData = patchCtx.getImageData(0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
     const childSource = canvas(TEXTURE_SIZE);
     const childCtx = childSource.getContext("2d", { willReadFrequently: true });
