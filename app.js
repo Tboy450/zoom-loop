@@ -42,6 +42,7 @@ const timelineInput = document.querySelector("#timelineInput");
 const timeReadout = document.querySelector("#timeReadout");
 const autoCinematicButton = document.querySelector("#autoCinematicButton");
 const autoTuneButton = document.querySelector("#autoTuneButton");
+const bestSpotsButton = document.querySelector("#bestSpotsButton");
 const smoothDefaultsButton = document.querySelector("#smoothDefaultsButton");
 const portalPickButton = document.querySelector("#portalPickButton");
 const portalClearButton = document.querySelector("#portalClearButton");
@@ -81,7 +82,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v19";
+const ASSET_VERSION = "v20";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -102,6 +103,7 @@ const state = {
   images: [],
   transitions: new Map(),
   portalOverrides: new Map(),
+  testedSpots: new Map(),
   progress: 0,
   isPlaying: false,
   isRecording: false,
@@ -292,7 +294,7 @@ function migrateLegacyTiming(settings) {
 function transitionKey(fromId, toId, settings, override) {
   const anchorX = override ? override.anchorX : settings.anchorX;
   const anchorY = override ? override.anchorY : settings.anchorY;
-  const placementMode = override ? "picked" : settings.autoAnchor ? "auto" : "manual";
+  const placementMode = override ? (override.tested ? "tested" : "picked") : settings.autoAnchor ? "auto" : "manual";
 
   return [
     fromId,
@@ -337,6 +339,29 @@ function getPortalOverride(fromId, toId) {
   return state.portalOverrides.get(getPairKey(fromId, toId));
 }
 
+// Automatic spots confirmed by rendering (see testPlacements), each kept
+// with the mode, start size and matching it was tested for.
+function testedSpotKey(settings) {
+  return `${settings.mode}:${settings.patch.toFixed(3)}:${settings.matchPriority || "balanced"}`;
+}
+
+function getTestedSpot(fromId, toId, settings) {
+  if (!settings.autoAnchor) return undefined;
+  const spot = state.testedSpots.get(getPairKey(fromId, toId));
+  return spot?.key === testedSpotKey(settings) ? spot : undefined;
+}
+
+// The spot a join uses instead of the estimate: your pick, else a tested one.
+function getJoinOverride(fromId, toId, settings) {
+  return getPortalOverride(fromId, toId) || getTestedSpot(fromId, toId, settings);
+}
+
+function forgetTestedSpots(image) {
+  for (const key of state.testedSpots.keys()) {
+    if (key.split("->").includes(image.id)) state.testedSpots.delete(key);
+  }
+}
+
 function invalidatePair(fromId, toId) {
   for (const key of state.transitions.keys()) {
     if (key.startsWith(`${fromId}:${toId}:`)) {
@@ -361,10 +386,10 @@ function clearPortalOverride(fromId, toId) {
 
 function purgePortalOverrides() {
   const ids = new Set(state.images.map((image) => image.id));
-  for (const key of state.portalOverrides.keys()) {
-    const [fromId, toId] = key.split("->");
-    if (!ids.has(fromId) || !ids.has(toId)) {
-      state.portalOverrides.delete(key);
+  for (const spots of [state.portalOverrides, state.testedSpots]) {
+    for (const key of spots.keys()) {
+      const [fromId, toId] = key.split("->");
+      if (!ids.has(fromId) || !ids.has(toId)) spots.delete(key);
     }
   }
 }
@@ -941,6 +966,7 @@ function applyPhotoFraming() {
     const url = createThumbnailUrl(canvas);
     if (photo.url.startsWith("blob:")) URL.revokeObjectURL(photo.url);
     releaseSharpCrops(photo);
+    forgetTestedSpots(photo);
     photo.canvas = canvas;
     photo.url = url;
     photo.framing = framing;
@@ -977,6 +1003,7 @@ function clearImages() {
   state.images = [];
   invalidateTransitions();
   state.portalOverrides.clear();
+  state.testedSpots.clear();
   state.isPickingPortal = false;
   state.progress = 0;
   timelineInput.value = "0";
@@ -1002,6 +1029,7 @@ function updateStatus() {
   autoSortButton.disabled = count < 3 || busy;
   autoCinematicButton.disabled = busy || renderModeInput.value === "stitched";
   autoTuneButton.disabled = busy;
+  bestSpotsButton.disabled = count < 2 || busy;
   portalPickButton.disabled = count < 2 || busy;
   portalClearButton.disabled = count < 2 || busy;
   controls.forEach((control) => { control.disabled = busy; });
@@ -1064,7 +1092,7 @@ async function prepareTransitions(settings, signal) {
 // unless they already exist for that spot (see buildPhotoDetail).
 async function prepareSharpCrops(from, to, settings) {
   if (!from.sourceBlob) return false;
-  const spot = PhotoZoom.matchPair(from.canvas, to.canvas, settings, getPortalOverride(from.id, to.id));
+  const spot = PhotoZoom.matchPair(from.canvas, to.canvas, settings, getJoinOverride(from.id, to.id, settings));
   const key = `${spot.anchorX.toFixed(3)},${spot.anchorY.toFixed(3)}`;
   if (from.detailKey === key) return false;
   from.detailKey = key;
@@ -1194,9 +1222,97 @@ async function autoTuneLoop() {
       : "Auto tuned smooth transition settings.",
     "ok"
   );
-  setPortalHelp("Auto Tune applied: smooth defaults, safer auto placement, and no old picked portals.", "ok");
+  const moved = state.images.length >= 2 ? await findBestSpots() : 0;
+  if (moved === null) return false;
+  setPortalHelp(`Auto Tune applied: smooth defaults and spots tested by rendering${moved ? ` (${moved} moved to blend in better)` : ""}; old picked portals cleared.`, "ok");
   drawCurrentFrame();
   return true;
+}
+
+// Tested placement: renders the best few spots for each join small, at four
+// stages of the zoom, and keeps the one whose join is least visible: color
+// and sharpness jumps across its border and color steps around it. The
+// automatic spot is replaced only when another is clearly better. Picks are
+// kept, and joins already tested for these settings are skipped.
+const TEST_SIZE = 240;
+const TEST_COVERAGES = [0.12, 0.25, 0.4, 0.6];
+async function testPlacements(settings, onProgress) {
+  const canvas = makeCanvas(TEST_SIZE, TEST_SIZE);
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const testSettings = { ...settings, size: TEST_SIZE };
+  let moved = 0;
+  try {
+    for (let index = 0; index < state.images.length; index++) {
+      const from = state.images[index], to = state.images[(index + 1) % state.images.length];
+      onProgress?.(index);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (getJoinOverride(from.id, to.id, settings)) continue;
+      const candidates = PhotoZoom.placementCandidates(from.canvas, to.canvas, settings);
+      const results = [];
+      for (const candidate of candidates) {
+        const spot = { anchorX: candidate.anchorX, anchorY: candidate.anchorY };
+        const transition = PhotoZoom.createTransition(from.canvas, to.canvas, settings, spot);
+        const use = (a, b, s) => a === from && b === to ? transition : getTransition(a, b, s);
+        let total = 0, count = 0;
+        for (const coverage of TEST_COVERAGES) {
+          const t = 1 - Math.log(0.8 * coverage) / Math.log(settings.patch);
+          if (!(t > 0 && t < 1)) continue;
+          PhotoZoom.render(ctx, state.images, index, t, testSettings, use);
+          const camera = PhotoZoom.geometry(t, transition.settings, TEST_SIZE, from.canvas.width);
+          const result = PhotoZoom.joinVisibility(ctx.getImageData(0, 0, TEST_SIZE, TEST_SIZE).data, TEST_SIZE,
+            (camera.patchX - camera.viewX) * camera.scale, (camera.patchY - camera.viewY) * camera.scale,
+            camera.patchSize * camera.scale);
+          if (result) { total += result.score; count++; }
+        }
+        transition.release?.();
+        results.push(count ? total / count : Infinity);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      let best = 0;
+      results.forEach((score, rank) => { if (score < results[best]) best = rank; });
+      // Small differences are measurement noise, not a better blend.
+      if (best > 0 && results[best] > results[0] * 0.95) best = 0;
+      if (!Number.isFinite(results[best])) continue;
+      state.testedSpots.set(getPairKey(from.id, to.id), { anchorX: candidates[best].anchorX, anchorY: candidates[best].anchorY,
+        key: testedSpotKey(settings), tested: true });
+      if (best > 0) moved++;
+      invalidatePair(from.id, to.id);
+    }
+  } finally {
+    canvas.width = canvas.height = 0;
+  }
+  return moved;
+}
+
+// Returns how many joins moved, or null when it could not run.
+async function findBestSpots() {
+  if (state.images.length < 2 || isBusy()) return null;
+  const settings = getSettings();
+  if (!settings.autoAnchor) {
+    setPortalHelp("Turn on Auto place to find the best spots.", "warn");
+    return null;
+  }
+  state.isPickingPortal = false;
+  state.isPlaying = false;
+  state.isPreparing = true;
+  updateStatus();
+  let moved = null, error;
+  try {
+    moved = await testPlacements(settings, index => {
+      statusText.textContent = `Testing spots for join ${index + 1} of ${state.images.length}`;
+    });
+  } catch (failure) {
+    error = failure;
+  }
+  state.isPreparing = false;
+  updateStatus();
+  syncPortalPickingUi();
+  syncPlaybackUi();
+  setPortalHelp(error ? `Could not test spots: ${error.message}` :
+    moved ? `Tested every join: ${moved} ${plural(moved, "photo")} moved to a spot that blends in better.` :
+    "Tested every join: the automatic spots already blend in best.", error ? "warn" : "ok");
+  drawCurrentFrame();
+  return error ? null : moved;
 }
 
 async function applyAutoCinematic() {
@@ -1356,9 +1472,15 @@ function getPickField(current, settings) {
 
 function getPickSpot(current, settings) {
   if (state.pickDrag) return { ...state.pickDrag, mode: "dragging" };
-  const override = getPortalOverride(current.from.id, current.to.id);
+  const override = getJoinOverride(current.from.id, current.to.id, settings);
   const match = PhotoZoom.matchPair(current.from.canvas, current.to.canvas, settings, override);
-  return { anchorX: match.anchorX, anchorY: match.anchorY, mode: override ? "picked" : settings.autoAnchor ? "auto" : "manual" };
+  return { anchorX: match.anchorX, anchorY: match.anchorY,
+    mode: override ? (override.tested ? "tested" : "picked") : settings.autoAnchor ? "auto" : "manual" };
+}
+
+// The automatic spot: tested by rendering if available, else the estimate.
+function getAutoSpot(current, settings) {
+  return PhotoZoom.matchPair(current.from.canvas, current.to.canvas, settings, getTestedSpot(current.from.id, current.to.id, settings));
 }
 
 function drawPickBox(ctx, image, anchorX, anchorY, settings, geometry, style) {
@@ -1415,20 +1537,25 @@ function drawPickView(current, settings) {
   ctx.restore();
   const spot = getPickSpot(current, settings);
   const number = (current.segment + 1) % state.images.length + 1;
-  if (spot.mode !== "auto" && settings.autoAnchor) {
-    const auto = PhotoZoom.matchPair(current.from.canvas, current.to.canvas, settings, undefined);
+  const automatic = spot.mode === "auto" || spot.mode === "tested";
+  if (!automatic && settings.autoAnchor) {
+    const auto = getAutoSpot(current, settings);
     drawPickBox(ctx, null, auto.anchorX, auto.anchorY, settings, geometry, { color: "rgba(245, 242, 236, 0.7)", dashed: true });
   }
   drawPickBox(ctx, current.to.canvas, spot.anchorX, spot.anchorY, settings, geometry, {
-    color: spot.mode === "auto" ? "#f5f2ec" : "#37c0aa", dashed: spot.mode === "auto",
-    label: spot.mode === "auto" ? `Photo ${number} · auto spot` : `Photo ${number}`
+    color: automatic ? "#f5f2ec" : "#37c0aa", dashed: automatic,
+    label: spot.mode === "tested" ? `Photo ${number} · auto spot (tested)` : automatic ? `Photo ${number} · auto spot` : `Photo ${number}`
   });
 }
 
 function describePickMatch(current, settings) {
   const override = getPortalOverride(current.from.id, current.to.id);
-  if (!override && settings.autoAnchor) return { text: "Auto spot: best match found", tone: "good" };
-  const auto = PhotoZoom.matchPair(current.from.canvas, current.to.canvas, { ...settings, autoAnchor: true }, undefined);
+  if (!override && settings.autoAnchor) {
+    return getTestedSpot(current.from.id, current.to.id, settings)
+      ? { text: "Auto spot (tested): blends in best of the spots rendered", tone: "good" }
+      : { text: "Auto spot: best match found", tone: "good" };
+  }
+  const auto = getAutoSpot(current, { ...settings, autoAnchor: true });
   const chosen = PhotoZoom.matchPair(current.from.canvas, current.to.canvas, settings, override);
   const ratio = chosen.match / Math.max(1e-6, auto.match);
   if (ratio <= 1.08) return { text: "Blends as well as the auto spot", tone: "good" };
@@ -1757,7 +1884,7 @@ async function autoSortImages() {
 }
 
 function getTransition(from, to, settings) {
-  const override = getPortalOverride(from.id, to.id);
+  const override = getJoinOverride(from.id, to.id, settings);
   const key = transitionKey(from.id, to.id, settings, override);
   if (!state.transitions.has(key)) {
     state.transitions.set(key, PhotoZoom.createTransition(from.canvas, to.canvas, settings, override));
@@ -1797,6 +1924,7 @@ function updatePlacementStatus(current, settings) {
     const { placement, settings: selected } = transition;
     const position = `${Math.round(selected.anchorX * 100)}% across, ${Math.round(selected.anchorY * 100)}% down`;
     const reason = placement.mode === "picked" ? "Your picked point" :
+      placement.mode === "tested" ? "Auto (tested): blends in best of the spots rendered" :
       placement.mode === "manual" ? "Manual anchor" :
       placement.reason === "stronger-match" ? "Auto: off-center for a substantially stronger visual match" :
       "Auto: balanced in-frame match";
@@ -1971,7 +2099,7 @@ async function saveProject() {
       format: "zoom-loop", version: 1, progress: state.progress,
       settings: Object.fromEntries(controls.map(control => [control.id,
         control.type === "checkbox" ? control.checked : control.value])),
-      images: [], portals: []
+      images: [], portals: [], tested: []
     };
     project.settings.fpsInput = String(getSettings().fps);
     if (state.images.length > 200) throw new Error("Projects support up to 200 photos");
@@ -1990,6 +2118,10 @@ async function saveProject() {
     for (const [pair, point] of state.portalOverrides) {
       const [from, to] = pair.split("->").map(id => indices.get(id));
       if (from !== undefined && to !== undefined) project.portals.push({ from, to, ...point });
+    }
+    for (const [pair, spot] of state.testedSpots) {
+      const [from, to] = pair.split("->").map(id => indices.get(id));
+      if (from !== undefined && to !== undefined) project.tested.push({ from, to, anchorX: spot.anchorX, anchorY: spot.anchorY, key: spot.key });
     }
     const blob = new Blob([JSON.stringify(project)], { type: "application/json" });
     if (blob.size > MAX_PROJECT_BYTES) throw new Error("Project is too large; use fewer photos (200 MB maximum)");
@@ -2069,7 +2201,13 @@ function validateProject(project) {
     if (image.source !== undefined && (typeof image.source !== "string" || image.source.length > 24 * 1024 * 1024 ||
         !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(image.source))) invalid();
   }
-  for (const point of project.portals) {
+  // Spots tested by rendering; older projects have none.
+  if (project.tested === undefined) project.tested = [];
+  if (!Array.isArray(project.tested) || project.tested.length > project.images.length ** 2) invalid();
+  for (const spot of project.tested) {
+    if (!spot || typeof spot.key !== "string" || spot.key.length > 64) invalid();
+  }
+  for (const point of [...project.portals, ...project.tested]) {
     if (!point || !Number.isInteger(point.from) || !Number.isInteger(point.to) ||
         point.from < 0 || point.to < 0 || point.from >= project.images.length || point.to >= project.images.length ||
         !Number.isFinite(point.anchorX) || !Number.isFinite(point.anchorY) ||
@@ -2109,6 +2247,8 @@ async function openProject(file) {
     });
     state.images = loaded;
     state.portalOverrides = portals;
+    state.testedSpots = new Map(project.tested.map(spot => [getPairKey(loaded[spot.from].id, loaded[spot.to].id),
+      { anchorX: spot.anchorX, anchorY: spot.anchorY, key: spot.key, tested: true }]));
     state.progress = project.progress;
     timelineInput.value = String(Math.round(state.progress * 1000));
     controls.forEach(control => {
@@ -2587,6 +2727,7 @@ frameApplyButton.addEventListener("click", applyPhotoFraming);
 frameDialog.addEventListener("close", () => { if (!frameDialog.open) finishPhotoFraming(); });
 autoCinematicButton.addEventListener("click", applyAutoCinematic);
 autoTuneButton.addEventListener("click", autoTuneLoop);
+bestSpotsButton.addEventListener("click", findBestSpots);
 smoothDefaultsButton.addEventListener("click", applySmoothDefaults);
 portalPickButton.addEventListener("click", togglePortalPickMode);
 portalClearButton.addEventListener("click", clearCurrentPortalPick);

@@ -37,12 +37,22 @@ At 1-3% start sizes the old photo is magnified up to 100x, and the app keeps onl
 
 Auto place scores spots with a fast estimate. Rendering a few of the best spots and keeping the one that measurably blends best is the most direct version of "placed where it blends in best".
 
-- [ ] 2.1 Pick the best few distinct candidate spots for each join
-- [ ] 2.2 Score each by rendering small test frames: color and sharpness jumps across the border, double exposure
-- [ ] 2.3 Keep the winner as the join's automatic spot (saved in projects; a manual pick still wins)
-- [ ] 2.4 Run it from Auto Tune with progress, so ordinary preparing stays fast
-- [ ] 2.5 Show "Auto (tested)" in the placement editor
-- [ ] 2.6 Measure against today's placement, test, push
+- [x] 2.1 Pick the best few distinct candidate spots for each join (the automatic spot plus the three strongest alternatives at least 12% of the photo apart)
+- [x] 2.2 Score each by rendering small test frames (240 px, four stages of the zoom): color and sharpness jumps across the border, color steps around it
+  - [x] Replace the automatic spot only when another scores at least 5% better
+- [x] 2.3 Keep the winner as the join's automatic spot
+  - [x] Saved in projects; used only with the mode, start size and matching it was tested for
+  - [x] A manual pick still wins and is never tested over
+  - [x] Forgotten when either photo is reframed or removed
+- [x] 2.4 Run it from Auto Tune and from its own `Find Best Spots` button, with progress, so ordinary preparing stays fast
+- [x] 2.5 Show "auto spot (tested)" in the placement editor and the placement readout
+- [x] 2.6 Measure against today's placement, test, push
+  - [x] Store photos (full resolution), Photo Blend: square edge -4/-15/-15%, color step -4/-11/-13%, sharpness jump -3/-11/-8% at 1/3/8%
+  - [x] Store photos, Stitched World: square edge -2/-10/-12%, color step -2/-8/-10%
+  - [x] Detailed set: -1 to -6% at 1-3%; at 8% within ±4% (no clear gain)
+  - [x] Tried 320 px test frames: better for Photo Blend at 8%, but lost the Stitched World gains; kept 240 px
+  - [x] Timing: 6 full-resolution store photos take about 7 s on a desktop (4 of 6 joins moved); expect a few times longer on a phone
+  - [x] Push and confirm live (v20)
 
 ## 3. Check on a real phone
 

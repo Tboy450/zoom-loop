@@ -10,10 +10,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Zoom Loop">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="manifest.webmanifest?v19">
+    <link rel="manifest" href="manifest.webmanifest?v20">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
-    <link rel="stylesheet" href="styles.css?v19">
+    <link rel="stylesheet" href="styles.css?v20">
   </head>
   <body>
     <main class="app-shell">
@@ -142,6 +142,7 @@
           <div class="tool-row">
             <button id="autoTuneButton" type="button">Auto Tune</button>
             <button id="autoCinematicButton" type="button">Auto Cinematic</button>
+            <button id="bestSpotsButton" type="button">Find Best Spots</button>
             <button id="portalPickButton" type="button">Place Manually</button>
             <button id="portalClearButton" type="button">Use Auto Spot</button>
             <button id="smoothDefaultsButton" type="button">Reset to Defaults</button>
@@ -154,7 +155,7 @@
             <span>Auto place</span>
             <input id="autoAnchorInput" type="checkbox" checked>
           </label>
-          <p class="hint">Finds the spot whose colors and texture best match the next photo.</p>
+          <p class="hint">Finds the spot whose colors and texture best match the next photo. Find Best Spots (also part of Auto Tune) renders the strongest few spots for every join and keeps the one that blends in best; it takes a few seconds per photo.</p>
 
           <label class="field">
             <span>Match by</span>
@@ -270,8 +271,8 @@
       </div>
     </dialog>
 
-    <script src="vendor/mp4-muxer.js?v19"></script>
-    <script src="zoom-renderer.js?v19"></script>
-    <script src="app.js?v19"></script>
+    <script src="vendor/mp4-muxer.js?v20"></script>
+    <script src="zoom-renderer.js?v20"></script>
+    <script src="app.js?v20"></script>
   </body>
 </html>

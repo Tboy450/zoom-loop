@@ -478,6 +478,76 @@ const PhotoZoom = (() => {
     return result;
   }
 
+  // The best few distinct spots for a join, best first: the automatic choice,
+  // then the strongest alternatives at least SPREAD apart, judged like it.
+  // The app renders each to keep the one that blends in best.
+  const SPREAD = 0.12;
+  function placementCandidates(parent, child, settings, count = 4) {
+    const chosen = findAnchor(parent, child, settings);
+    const target = photoFeatures(child), field = anchorField(parent, settings.patch);
+    const scored = [...field.grids[0], ...field.grids[1]].map(candidate => {
+      const match = spotMatch(candidate, target, settings);
+      return { anchorX: candidate.anchorX, anchorY: candidate.anchorY, match,
+        score: match + Math.hypot(candidate.anchorX - 0.5, candidate.anchorY - 0.5) * 0.06 };
+    }).sort((a, b) => a.score - b.score);
+    const picked = [{ anchorX: chosen.anchorX, anchorY: chosen.anchorY, match: chosen.match, score: chosen.score }];
+    for (const candidate of scored) {
+      if (picked.length >= count) break;
+      if (picked.every(other => Math.hypot(other.anchorX - candidate.anchorX, other.anchorY - candidate.anchorY) >= SPREAD)) picked.push(candidate);
+    }
+    return picked;
+  }
+
+  // How visible a join is in a rendered frame, lower being better: the color
+  // jump straight across the incoming photo's border (a square), how much
+  // sharper one side of it is than the other, and the largest broad color
+  // step between rings around it. `side` is the photo's drawn size and
+  // (x0, y0) its top-left corner, in pixels of the frame.
+  function joinVisibility(data, size, x0, y0, side) {
+    const light = i => data[i] * 0.2126 + data[i + 1] * 0.7152 + data[i + 2] * 0.0722;
+    const segments = Array.from({ length: 24 }, () => ({ inside: [0, 0, 0, 0, 0], outside: [0, 0, 0, 0, 0] }));
+    // Twelve rings from inside the photo to well outside it, in 8 sectors.
+    const rings = Array.from({ length: 12 * 8 }, () => [0, 0, 0, 0]);
+    for (let y = 1; y < size - 1; y++) {
+      for (let x = 1; x < size - 1; x++) {
+        const u = (x + 0.5 - x0) / side - 0.5, v = (y + 0.5 - y0) / side - 0.5;
+        const d = Math.max(Math.abs(u), Math.abs(v));
+        const i = (y * size + x) * 4;
+        if (d >= 0.3 && d < 0.9) {
+          const sector = Math.floor(((Math.atan2(v, u) / (Math.PI * 2) + 1.0625) % 1) * 8);
+          const ring = rings[Math.floor((d - 0.3) / 0.05) * 8 + sector];
+          ring[0] += data[i]; ring[1] += data[i + 1]; ring[2] += data[i + 2]; ring[3]++;
+        }
+        if (d < 0.44 || d > 0.56 || (d > 0.49 && d < 0.51)) continue;
+        const vertical = Math.abs(u) >= Math.abs(v);
+        const along = vertical ? v : u;
+        const segment = (vertical ? (u > 0 ? 0 : 1) : (v > 0 ? 2 : 3)) * 6 + clamp(Math.floor((along / (2 * d) + 0.5) * 6), 0, 5);
+        const band = segments[segment][d < 0.5 ? "inside" : "outside"];
+        band[0] += data[i]; band[1] += data[i + 1]; band[2] += data[i + 2]; band[3]++;
+        band[4] += Math.abs(4 * light(i) - light(i - 4) - light(i + 4) - light(i - size * 4) - light(i + size * 4));
+      }
+    }
+    const valid = segments.filter(s => s.inside[3] > 8 && s.outside[3] > 8);
+    if (valid.length < 6) return null;
+    const mean = values => values.reduce((sum, value) => sum + value, 0) / values.length;
+    const squareEdge = mean(valid.map(s => Math.hypot(...[0, 1, 2].map(c => s.inside[c] / s.inside[3] - s.outside[c] / s.outside[3])) / 255));
+    const detailJump = mean(valid.map(s => Math.abs(Math.log((s.inside[4] / s.inside[3] + 1) / (s.outside[4] / s.outside[3] + 1)))));
+    const steps = [];
+    for (let sector = 0; sector < 8; sector++) {
+      const filled = [];
+      for (let k = 0; k < 12; k++) if (rings[k * 8 + sector][3] > 20) filled.push(rings[k * 8 + sector]);
+      if (filled.length < 4) continue;
+      let step = 0;
+      for (let k = 1; k < filled.length; k++) {
+        step = Math.max(step, Math.hypot(...[0, 1, 2].map(c => filled[k][c] / filled[k][3] - filled[k - 1][c] / filled[k - 1][3])) / 255);
+      }
+      steps.push(step);
+    }
+    const colorStep = steps.length ? mean(steps) : 0;
+    // Scaled so each part counts about equally on typical photos.
+    return { squareEdge, detailJump, colorStep, score: squareEdge / 0.06 + detailJump / 0.6 + colorStep / 0.12 };
+  }
+
   function matchPair(parent, child, settings, override, quick = false) {
     if (settings.autoAnchor && !override) return findAnchor(parent, child, settings, quick);
     const point = rect({ ...settings, ...override });
@@ -576,8 +646,8 @@ const PhotoZoom = (() => {
 
   function createTransition(parent, child, requested, override) {
     const settings = { ...requested };
-    let placement = { mode: override ? "picked" : "manual" };
-    if (override) Object.assign(settings, override, { autoAnchor: false });
+    let placement = { mode: override ? (override.tested ? "tested" : "picked") : "manual" };
+    if (override) Object.assign(settings, { anchorX: override.anchorX, anchorY: override.anchorY, autoAnchor: false });
     else if (settings.autoAnchor) {
       const anchor = findAnchor(parent, child, settings);
       settings.anchorX = anchor.anchorX;
@@ -1242,5 +1312,5 @@ const PhotoZoom = (() => {
     return shown / count;
   }
 
-  return { createTransition, geometry, render, matchPair, matchField, revealedShare, setDetail };
+  return { createTransition, geometry, render, matchPair, matchField, revealedShare, setDetail, placementCandidates, joinVisibility };
 })();

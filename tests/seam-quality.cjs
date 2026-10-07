@@ -13,7 +13,8 @@
 //   zoomDetail: fine detail in the magnified photo around the incoming one
 //              (higher is sharper); with ZOOM_NO_CROPS=1 the sharp crops
 //              from the originals are left out, for comparison
-// ZOOM_SIZE sets the measuring size (default 480).
+// ZOOM_SIZE sets the measuring size (default 480). ZOOM_TESTED=1 runs Find
+// Best Spots for each start size and mode before measuring.
 // ZOOM_PATCHES picks start sizes (default 0.02,0.08,0.16,0.34). Contact
 // sheets show ZOOM_SHEET_COVERAGE, the share of the screen the incoming
 // photo covers, so different start sizes show comparable stages.
@@ -57,10 +58,14 @@ const server = http.createServer((req, res) => {
     const modes = (process.env.ZOOM_MODES || "blend,stitched").split(",");
     // Extra settings as JSON, such as {"pixelReveal":1}.
     const extra = process.env.ZOOM_SETTINGS ? JSON.parse(process.env.ZOOM_SETTINGS) : {};
-    const result = await page.evaluate(async ({ sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes, extra, measureSize, crops }) => {
+    const result = await page.evaluate(async ({ sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes, extra, measureSize, crops, tested }) => {
       const size = measureSize;
       // Cut sharp crops for each join as "Preparing" does (newer versions).
       const prepareCrops = async settings => {
+        if (tested && typeof testPlacements === "function") {
+          state.testedSpots.clear();
+          await testPlacements(settings);
+        }
         if (typeof prepareSharpCrops !== "function") return;
         while (sharpCropsRun) await sharpCropsRun;
         for (const [pair, image] of state.images.entries()) {
@@ -261,7 +266,7 @@ const server = http.createServer((req, res) => {
         sheets.push({ mode, data: sheet.toDataURL("image/jpeg", 0.9) });
       }
       return { order, records, sheets, timing };
-    }, { sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes, extra, measureSize: Number(process.env.ZOOM_SIZE) || 480, crops: !process.env.ZOOM_NO_CROPS });
+    }, { sort, sheetPatch, sheetTimes, sheetCoverage, patches, modes, extra, measureSize: Number(process.env.ZOOM_SIZE) || 480, crops: !process.env.ZOOM_NO_CROPS, tested: Boolean(process.env.ZOOM_TESTED) });
     for (const sheet of result.sheets) fs.writeFileSync(path.join(output, `seam-${label}-${sheet.mode}.jpg`), Buffer.from(sheet.data.split(",")[1], "base64"));
     delete result.sheets;
     const summary = {};

@@ -8,6 +8,7 @@ const testProjects = require("./projects.cjs");
 const testFraming = require("./framing.cjs");
 const testMobileExport = require("./mobile-export.cjs");
 const testDetail = require("./detail.cjs");
+const testPlacement = require("./placement.cjs");
 
 const root = path.resolve(__dirname, "..");
 const output = path.join(root, "test-results");
@@ -329,9 +330,11 @@ const server = http.createServer((req, res) => {
     for (const button of ["#autoSortButton", "#autoTuneButton", "#autoCinematicButton", "#smoothDefaultsButton"]) {
       const ids = await page.evaluate(() => state.images.map(image => image.id).sort());
       await page.locator(button).click();
+      // Auto Tune and Auto Cinematic also test spots by rendering.
+      await page.waitForFunction(() => !isBusy());
       assert.deepEqual(await page.evaluate(() => state.images.map(image => image.id).sort()), ids);
       assert.equal(await page.locator("#patchInput").inputValue(), "8");
-      assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
+      assert.match(await page.locator("#placementStatus").textContent(), /Auto( \(tested\))?:/);
     }
     await page.locator("#autoAnchorInput").uncheck();
     assert.match(await page.locator("#placementStatus").textContent(), /Manual anchor/);
@@ -342,7 +345,7 @@ const server = http.createServer((req, res) => {
     assert.match(await page.locator("#placementStatus").textContent(), /Your picked point/);
     await page.locator("#portalClearButton").click();
     assert.match(await page.locator("#portalHelp").textContent(), /Cleared/);
-    assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
+    assert.match(await page.locator("#placementStatus").textContent(), /Auto( \(tested\))?:/);
     // The placement editor stays open, shows the join, and previews it
     // without playback. Dragging maps the preview onto the parent photo.
     assert.equal(await page.locator("#pickerPanel").isVisible(), true);
@@ -393,6 +396,7 @@ const server = http.createServer((req, res) => {
     const framing = await testFraming(browser, `http://127.0.0.1:${server.address().port}/`, output);
     const mobileExport = await testMobileExport(browser, `http://127.0.0.1:${server.address().port}/`, fixtures);
     const detail = await testDetail(browser, `http://127.0.0.1:${server.address().port}/`);
+    const placement = await testPlacement(browser, `http://127.0.0.1:${server.address().port}/`);
 
     if (process.env.ZOOM_TEST_PHOTOS) {
       await page.locator("#clearButton").click();
@@ -459,8 +463,8 @@ const server = http.createServer((req, res) => {
     await page.evaluate(() => navigator.serviceWorker.ready);
     await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
     const cacheReady = await page.evaluate(async () => {
-      const cache = await caches.open("zoom-loop-v19");
-      return Boolean(await cache.match("./zoom-renderer.js?v19"));
+      const cache = await caches.open("zoom-loop-v20");
+      return Boolean(await cache.match("./zoom-renderer.js?v20"));
     });
     assert.equal(cacheReady, true);
     await page.context().setOffline(true);
@@ -468,9 +472,9 @@ const server = http.createServer((req, res) => {
     assert.equal(await page.locator("#patchInput").inputValue(), "8");
     await page.locator("#sampleButton").click();
     await page.waitForFunction(() => state.images.length === 3);
-    assert.match(await page.locator("#placementStatus").textContent(), /Auto:/);
+    assert.match(await page.locator("#placementStatus").textContent(), /Auto( \(tested\))?:/);
     assert.deepEqual(errors, []);
-    const result = { placementChecks, geometryChecks, concealment, seams, resolutions, fixedScene, scrub, reliability, projects, framing, mobileExport, detail, offline: "passed", averageFrameMs: montage.averageMs, photos: photoCount, video: path.basename(videoPath) };
+    const result = { placementChecks, geometryChecks, concealment, seams, resolutions, fixedScene, scrub, reliability, projects, framing, mobileExport, detail, placement, offline: "passed", averageFrameMs: montage.averageMs, photos: photoCount, video: path.basename(videoPath) };
     fs.writeFileSync(path.join(output, "results.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ ...result, seams: `${seams.length} endpoint comparisons passed` }, null, 2));
   } finally {
