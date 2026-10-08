@@ -151,6 +151,9 @@ How large the next photo is inside the current one when its zoom begins, from 1%
 `Auto place`
 Compares color, texture, and edge direction at two scales, emphasizing the central crop of the next photo that will actually be visible. It also checks contrast around the insertion boundary and camera travel. Candidates stay inside the visible source crop, with room for the photo's size. Each spot is judged by how the next photo will look there: against the spot itself, its edge against the ring of the parent just outside the spot (where the seam is), and, for small start sizes, against the surrounding area that stays on screen while it forms. Spots are always judged over at least 6% of the photo, since a 1% patch is too small to tell. The best central candidate wins unless an off-center candidate reduces the visual mismatch by at least 20% and an absolute score margin. On ambiguous or featureless photos, it favors staying centered.
 
+`Auto place looks for`
+`Best match` (the default) picks the spot whose colors and texture fit the next photo best. `Shimmer` prefers areas where the light shifts: reflections on glossy paint or glass, glare, ripples, glints, light streaks and foliage. A forming photo disappears best there, because whatever it adds looks like more of the same. It still requires the photo's light and color to fit (texture is not compared, since shifting light hides it), and plain areas, such as a dark wall or a clear sky, are avoided. Saved in projects; Find Best Spots tests spots for the style you choose.
+
 The placement readout explains the decision for the current transition and shows the point's location. It distinguishes a balanced automatic choice, a stronger off-center match, a spot tested by rendering, manual sliders, and a picked override. This is pixel-based matching, not face or object recognition; use `Place Manually` to protect a particular subject.
 
 `Spot across` and `Spot down`

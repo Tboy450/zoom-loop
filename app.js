@@ -22,6 +22,7 @@ const renderModeHelp = document.querySelector("#renderModeHelp");
 const sampleButton = document.querySelector("#sampleButton");
 const autoSortButton = document.querySelector("#autoSortButton");
 const matchPriorityInput = document.querySelector("#matchPriorityInput");
+const placementStyleInput = document.querySelector("#placementStyleInput");
 const clearButton = document.querySelector("#clearButton");
 const saveProjectButton = document.querySelector("#saveProjectButton");
 const openProjectButton = document.querySelector("#openProjectButton");
@@ -82,7 +83,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v21";
+const ASSET_VERSION = "v22";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -125,6 +126,7 @@ let frameSession = null;
 
 const controls = [
   matchPriorityInput,
+  placementStyleInput,
   renderModeInput,
   sizeInput,
   durationInput,
@@ -208,6 +210,7 @@ function getSettings() {
     patch: Number(patchInput.value) / 100,
     autoAnchor: autoAnchorInput.checked,
     matchPriority: matchPriorityInput.value,
+    placementStyle: placementStyleInput.value,
     anchorX: Number(anchorXInput.value) / 100,
     anchorY: Number(anchorYInput.value) / 100,
     bind: Number(bindInput.value) / 100,
@@ -301,6 +304,7 @@ function transitionKey(fromId, toId, settings, override) {
     toId,
     settings.mode,
     settings.matchPriority,
+    settings.placementStyle,
     settings.smoothGuard ? "guard" : "raw",
     settings.cinematicMode ? "cinema" : "plain",
     settings.patch.toFixed(3),
@@ -342,7 +346,7 @@ function getPortalOverride(fromId, toId) {
 // Automatic spots confirmed by rendering (see testPlacements), each kept
 // with the mode, start size and matching it was tested for.
 function testedSpotKey(settings) {
-  return `${settings.mode}:${settings.patch.toFixed(3)}:${settings.matchPriority || "balanced"}`;
+  return `${settings.mode}:${settings.patch.toFixed(3)}:${settings.matchPriority || "balanced"}:${settings.placementStyle || "match"}`;
 }
 
 function getTestedSpot(fromId, toId, settings) {
@@ -1163,6 +1167,7 @@ function syncAnchorMode() {
   const isAuto = autoAnchorInput.checked;
   anchorXInput.disabled = isAuto || isBusy();
   anchorYInput.disabled = isAuto || isBusy();
+  placementStyleInput.disabled = !isAuto || isBusy();
 }
 
 function syncRenderMode() {
@@ -1457,7 +1462,7 @@ function cancelPickDrag() {
 
 const pickFieldCache = new Map();
 function getPickField(current, settings) {
-  const key = `${current.from.id}:${current.to.id}:${settings.patch}:${settings.matchPriority}`;
+  const key = `${current.from.id}:${current.to.id}:${settings.patch}:${settings.matchPriority}:${settings.placementStyle}`;
   if (!pickFieldCache.has(key)) {
     if (pickFieldCache.size > 24) pickFieldCache.clear();
     const field = PhotoZoom.matchField(current.from.canvas, current.to.canvas, settings);
@@ -2180,6 +2185,7 @@ function validateProject(project) {
   for (const control of controls) {
     // Older project files predate the matching-priority selector.
     if (control === matchPriorityInput && project.settings[control.id] === undefined) project.settings[control.id] = "balanced";
+    if (control === placementStyleInput && project.settings[control.id] === undefined) project.settings[control.id] = "match";
     if (control === pixelRevealInput && project.settings[control.id] === undefined) project.settings[control.id] = "0";
     const value = project.settings[control.id];
     if (control.type === "checkbox") {

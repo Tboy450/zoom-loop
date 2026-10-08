@@ -347,6 +347,59 @@ const PhotoZoom = (() => {
       full: patchSamples(data, x, y, p), boundary: boundary / (96 * 255) };
   }
 
+  // Where a photo's light shifts: reflections, glare, ripples, foliage and
+  // other irregular, curved variation. A forming photo disappears best there,
+  // since whatever it adds looks like more of the same. Plain areas score
+  // low, and long straight lines (all one direction) somewhat lower. Kept
+  // as an integral image over a 256 grid, for fast window means.
+  const shimmerCache = new WeakMap();
+  const SHIMMER_GRID = 256;
+  function shimmerMap(source) {
+    if (shimmerCache.has(source)) return shimmerCache.get(source);
+    const size = SHIMMER_GRID, n = size * size, image = pixels(source, size);
+    const luma = (values, i, stride) => values[i * stride] * 0.2126 + values[i * stride + 1] * 0.7152 + values[i * stride + 2] * 0.0722;
+    const fineBlur = lowPass(image, 2), broadBlur = lowPass(image, 8);
+    const energy = { width: size, data: new Float32Array(n * 4) };
+    const tensor = { width: size, data: new Float32Array(n * 4) };
+    const near = new Float32Array(n);
+    for (let i = 0; i < n; i++) near[i] = luma(fineBlur, i, 3);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const i = y * size + x;
+        const light = luma(image.data, i, 4), broad = luma(broadBlur, i, 3);
+        // Fine flicker, mid-scale variation, and highlights brighter than
+        // their surroundings (glints and glare).
+        energy.data[i * 4] = Math.abs(light - near[i]) * 0.4 + Math.abs(near[i] - broad) * 0.6 + Math.max(0, near[i] - broad) * 0.4;
+        const gx = near[y * size + Math.min(size - 1, x + 1)] - near[y * size + Math.max(0, x - 1)];
+        const gy = near[Math.min(size - 1, y + 1) * size + x] - near[Math.max(0, y - 1) * size + x];
+        tensor.data[i * 4] = gx * gx; tensor.data[i * 4 + 1] = gy * gy; tensor.data[i * 4 + 2] = gx * gy;
+      }
+    }
+    const local = lowPass(energy, 6), structure = lowPass(tensor, 6);
+    const stride = size + 1, integral = new Float64Array(stride * stride);
+    for (let y = 0; y < size; y++) {
+      let row = 0;
+      for (let x = 0; x < size; x++) {
+        const i = y * size + x, xx = structure[i * 3], yy = structure[i * 3 + 1], xy = structure[i * 3 + 2];
+        // 1 when every edge nearby runs the same way, 0 when they turn freely.
+        const coherence = Math.sqrt((xx - yy) ** 2 + 4 * xy * xy) / (xx + yy + 1e-3);
+        row += local[i * 3] * (1 - 0.45 * coherence);
+        integral[(y + 1) * stride + x + 1] = row + integral[y * stride + x + 1];
+      }
+    }
+    const result = { integral, stride, size };
+    shimmerCache.set(source, result);
+    return result;
+  }
+
+  function shimmerAt(map, x, y, width) {
+    const x0 = clamp(Math.round(x * map.size), 0, map.size), y0 = clamp(Math.round(y * map.size), 0, map.size);
+    const x1 = clamp(Math.round((x + width) * map.size), x0 + 1, map.size), y1 = clamp(Math.round((y + width) * map.size), y0 + 1, map.size);
+    const { integral, stride } = map;
+    return (integral[y1 * stride + x1] - integral[y0 * stride + x1] - integral[y1 * stride + x0] + integral[y0 * stride + x0]) /
+      Math.max(1, (x1 - x0) * (y1 - y0));
+  }
+
   // Spots are judged over at least MIN_MATCH of the photo: a 1% patch is
   // about ten pixels of the parent, too little to tell whether the next
   // photo blends in. Each spot also records the light and color of the area
@@ -359,8 +412,18 @@ const PhotoZoom = (() => {
       const parentData = analysis(parent);
       const margin = (1 - FRAME) / 2 + p / 2 + 0.05;
       const size = Math.max(p, MIN_MATCH);
+      // Shimmer over the spot and the band around it where its halo forms,
+      // relative to the photo's most shimmering areas (90th percentile).
+      const shimmer = shimmerMap(parent), reach = size * 1.5;
+      const windows = [];
+      for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+        windows.push(shimmerAt(shimmer, mix(margin, 1 - margin, x / 15) - reach / 2, mix(margin, 1 - margin, y / 15) - reach / 2, reach));
+      }
+      windows.sort((a, b) => a - b);
+      const shimmerTop = Math.max(1e-3, windows[Math.floor(windows.length * 0.9)]);
       const candidate = (x, y) => {
         const result = anchorCandidate(parentData, x, y, size);
+        result.shimmer = clamp(shimmerAt(shimmer, x - reach / 2, y - reach / 2, reach) / shimmerTop, 0, 1);
         const area = Math.min(0.9, size * CONTEXT);
         result.context = patchSamples(parentData, x - area / 2, y - area / 2, area).mean;
         // The 8 x 8 cells of a window 8/6 the spot's size: its outer ring of
@@ -384,8 +447,12 @@ const PhotoZoom = (() => {
   // against the spot itself and against the area around it that stays on
   // screen while it forms, and its edge against what touches it.
   function spotMatch(candidate, target, settings) {
-    const own = comparePatches(candidate.core, target.core, settings.matchPriority) * 0.65 +
-      comparePatches(candidate.full, target.full, settings.matchPriority) * 0.35 + candidate.boundary * 0.04;
+    // Shimmer placement judges fit by light and color: shifting light hides
+    // differences in texture.
+    const shimmering = settings.placementStyle === "shimmer";
+    const priority = shimmering ? "lighting" : settings.matchPriority;
+    const own = comparePatches(candidate.core, target.core, priority) * 0.65 +
+      comparePatches(candidate.full, target.full, priority) * 0.35 + candidate.boundary * 0.04;
     const context = candidate.context;
     const surroundings = Math.abs(target.full.mean[0] - context[0]) * 0.6 +
       Math.hypot(target.full.mean[1] - context[1], target.full.mean[2] - context[2]) * 0.4;
@@ -401,8 +468,12 @@ const PhotoZoom = (() => {
       }
     }
     // The surroundings fill more of the screen while small photos form.
-    return own + surroundings * SURROUNDINGS_WEIGHT * (1 - smooth(0.03, 0.12, settings.patch)) + seam / cells * SEAM_WEIGHT;
+    const match = own + surroundings * SURROUNDINGS_WEIGHT * (1 - smooth(0.03, 0.12, settings.patch)) + seam / cells * SEAM_WEIGHT;
+    // Shimmer placement: shifting light counts for up to SHIMMER_PULL of the
+    // score, so a shimmering spot wins unless its colors fit clearly worse.
+    return shimmering ? match * (1 - SHIMMER_PULL * candidate.shimmer) : match;
   }
+  const SHIMMER_PULL = 0.5;
   const SURROUNDINGS_WEIGHT = 0.3;
   const SEAM_WEIGHT = 0.25;
 
@@ -421,7 +492,7 @@ const PhotoZoom = (() => {
     if (!children) matchCache.set(parent, children = new WeakMap());
     let matches = children.get(child);
     if (!matches) children.set(child, matches = new Map());
-    const key = `${settings.patch}:${settings.matchPriority || "balanced"}:${quick}`;
+    const key = `${settings.patch}:${settings.matchPriority || "balanced"}:${settings.placementStyle || "match"}:${quick}`;
     if (matches.has(key)) return matches.get(key);
     const inset = (1 - FRAME) / 2;
     const target = photoFeatures(child);
@@ -1320,5 +1391,11 @@ const PhotoZoom = (() => {
     return shown / count;
   }
 
-  return { createTransition, geometry, render, matchPair, matchField, revealedShare, setDetail, placementCandidates, joinVisibility };
+  // How much a spot shimmers (0-1, relative to the photo's most shimmering
+  // areas), for tests and the placement editor.
+  function spotShimmer(parent, settings, anchorX, anchorY) {
+    return anchorField(parent, settings.patch).candidate(anchorX, anchorY).shimmer;
+  }
+
+  return { createTransition, geometry, render, matchPair, matchField, revealedShare, setDetail, placementCandidates, joinVisibility, spotShimmer };
 })();

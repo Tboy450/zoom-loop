@@ -85,9 +85,60 @@ module.exports = async function testPlacement(browser, url) {
     assert.equal(result.pickedTested, false, "A picked join is not tested");
     assert.equal(result.after, result.before, "Projects keep tested spots");
     assert.equal(result.reopened, "tested");
+    const shimmer = await testShimmer(page);
     assert.deepEqual(errors, []);
-    return { joins: result.count, seconds: +seconds.toFixed(1), seamMax: result.seamMax };
+    return { joins: result.count, seconds: +seconds.toFixed(1), seamMax: result.seamMax, shimmer };
   } finally {
     await page.close();
   }
 };
+
+// Shimmer placement rates shifting light (ripples, glints) highly and plain
+// areas low, and favors the rippling spot over a plain one of the same color
+// much more than Best match does; the setting is kept in projects.
+async function testShimmer(page) {
+  const result = await page.evaluate(async () => {
+    clearImages();
+    const make = draw => { const c = makeCanvas(1024, 1024), ctx = c.getContext("2d"); draw(ctx, ctx.createImageData(1024, 1024)); return c; };
+    // Left half plain, right half rippling highlights, both averaging the
+    // same grey-green; the next photo is a gentle texture of that color.
+    const parent = make((ctx, img) => {
+      for (let y = 0; y < 1024; y++) for (let x = 0; x < 1024; x++) {
+        const i = (y * 1024 + x) * 4, ripple = x > 512 ? 45 * Math.sin(x / 9 + 3 * Math.sin(y / 23)) * Math.sin(y / 13 + 2 * Math.cos(x / 31)) : 0;
+        img.data[i] = 110 + ripple; img.data[i + 1] = 130 + ripple; img.data[i + 2] = 115 + ripple; img.data[i + 3] = 255;
+      }
+      ctx.putImageData(img, 0, 0);
+    });
+    const child = make((ctx, img) => {
+      for (let y = 0; y < 1024; y++) for (let x = 0; x < 1024; x++) {
+        const i = (y * 1024 + x) * 4, v = 12 * Math.sin(x / 40) * Math.cos(y / 50);
+        img.data[i] = 110 + v; img.data[i + 1] = 130 + v; img.data[i + 2] = 115 + v; img.data[i + 3] = 255;
+      }
+      ctx.putImageData(img, 0, 0);
+    });
+    const ratio = style => {
+      const settings = { ...getSettings(), placementStyle: style };
+      const field = PhotoZoom.matchField(parent, child, settings);
+      const near = x => field.reduce((b, p) => Math.hypot(p.anchorX - x, p.anchorY - 0.5) < Math.hypot(b.anchorX - x, b.anchorY - 0.5) ? p : b).match;
+      return near(0.62) / near(0.4);
+    };
+    const settings = getSettings();
+    const shimmerRipple = PhotoZoom.spotShimmer(parent, settings, 0.62, 0.5), shimmerPlain = PhotoZoom.spotShimmer(parent, settings, 0.4, 0.5);
+    const files = [];
+    for (const [n, c] of [[0, parent], [1, child], [2, child]]) files.push(new File([await new Promise(r => c.toBlob(r))], `shimmer-${n}.png`, { type: "image/png" }));
+    await loadFiles(files);
+    placementStyleInput.value = "shimmer";
+    let saved;
+    const originalDownload = downloadBlob;
+    downloadBlob = blob => { saved = blob; };
+    await saveProject();
+    downloadBlob = originalDownload;
+    placementStyleInput.value = "match";
+    await openProject(new File([saved], "shimmer.zoomloop"));
+    return { shimmerRipple, shimmerPlain, best: ratio("match"), shimmer: ratio("shimmer"), reopened: placementStyleInput.value };
+  });
+  assert.ok(result.shimmerRipple > 0.8 && result.shimmerPlain < 0.2, `Ripples shimmer, plain areas do not: ${JSON.stringify(result)}`);
+  assert.ok(result.shimmer < result.best * 0.6, `Shimmer placement must favor the rippling spot: ${JSON.stringify(result)}`);
+  assert.equal(result.reopened, "shimmer");
+  return { rippleVsPlain: { best: +result.best.toFixed(2), shimmer: +result.shimmer.toFixed(2) } };
+}
