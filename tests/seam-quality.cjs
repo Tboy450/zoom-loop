@@ -10,6 +10,8 @@
 //              high while ordinary texture averages out
 //   detailJump: how much sharper the inside of that border is than the
 //              outside (a crisp photo inside a soft, magnified scene)
+//   echo:      how strongly the area just outside the incoming photo copies
+//              the photo mirrored across its edges (a kaleidoscope echo)
 //   zoomDetail: fine detail in the magnified photo around the incoming one
 //              (higher is sharper); with ZOOM_NO_CROPS=1 the sharp crops
 //              from the originals are left out, for comparison
@@ -106,6 +108,33 @@ const server = http.createServer((req, res) => {
         if (n < 400 || !ff || !pp || !cc) return null;
         return Math.min(Math.max(0, fp / Math.sqrt(ff * pp)), Math.max(0, fc / Math.sqrt(ff * cc)));
       };
+      // The incoming photo mirrored across each edge, drawn where it sits.
+      const echoScore = (data, to, x0, y0, side) => {
+        if (side < 12) return null;
+        referenceCtx.fillStyle = "#000"; referenceCtx.fillRect(0, 0, size, size);
+        for (let sy = -1; sy <= 1; sy++) for (let sx = -1; sx <= 1; sx++) {
+          if (!sx && !sy) continue;
+          referenceCtx.save();
+          referenceCtx.translate(x0 + sx * side + (sx ? side : 0), y0 + sy * side + (sy ? side : 0));
+          referenceCtx.scale(sx ? -1 : 1, sy ? -1 : 1);
+          referenceCtx.drawImage(to.canvas, 0, 0, side, side);
+          referenceCtx.restore();
+        }
+        const mirror = referenceCtx.getImageData(0, 0, size, size).data;
+        const luma = (d, i) => d[i] * 0.2126 + d[i + 1] * 0.7152 + d[i + 2] * 0.0722;
+        const detail = (d, x, y) => { const i = (y * size + x) * 4, row = size * 4;
+          return 4 * luma(d, i) - luma(d, i - 4) - luma(d, i + 4) - luma(d, i - row) - luma(d, i + row); };
+        let fm = 0, ff = 0, mm = 0, n = 0;
+        for (let y = 1; y < size - 1; y += 2) {
+          for (let x = 1; x < size - 1; x += 2) {
+            const d = Math.max(Math.abs((x + 0.5 - x0) / side - 0.5), Math.abs((y + 0.5 - y0) / side - 0.5));
+            if (d < 0.52 || d > 0.95) continue;
+            const f = detail(data, x, y), m = detail(mirror, x, y);
+            fm += f * m; ff += f * f; mm += m * m; n++;
+          }
+        }
+        return n > 200 && ff && mm ? Math.max(0, fm / Math.sqrt(ff * mm)) : null;
+      };
       const measure = (pair, t, settings) => {
         const from = state.images[pair], to = state.images[(pair + 1) % state.images.length];
         drawTransition(from, to, t, settings);
@@ -195,7 +224,7 @@ const server = http.createServer((req, res) => {
         }
         return sectors ? { colorStep: colorStep / sectors, detailDip: detailDip / sectors, streak: streak / sectors,
           ghost: ghostScore(data, from, to, camera, x0, y0, side), rimGhost: ghostScore(data, from, to, camera, x0, y0, side, [0.38, 0.5]),
-          squareEdge, detailJump, zoomDetail } : null;
+          squareEdge, detailJump, zoomDetail, echo: echoScore(data, to, x0, y0, side) } : null;
       };
       setCanvasSize(size);
       const records = [];
@@ -213,7 +242,7 @@ const server = http.createServer((req, res) => {
             }
             const mean = key => { const values = pairScores.map(s => s[key]).filter(value => value !== null);
               return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length); };
-            records.push({ mode, patch, pair, colorStep: mean("colorStep"), detailDip: mean("detailDip"), streak: mean("streak"), ghost: mean("ghost"), rimGhost: mean("rimGhost"), squareEdge: mean("squareEdge"), detailJump: mean("detailJump"), zoomDetail: mean("zoomDetail") });
+            records.push({ mode, patch, pair, colorStep: mean("colorStep"), detailDip: mean("detailDip"), streak: mean("streak"), ghost: mean("ghost"), rimGhost: mean("rimGhost"), squareEdge: mean("squareEdge"), detailJump: mean("detailJump"), zoomDetail: mean("zoomDetail"), echo: mean("echo") });
           }
           await new Promise(resolve => setTimeout(resolve, 0));
         }
@@ -272,12 +301,12 @@ const server = http.createServer((req, res) => {
     const summary = {};
     for (const record of result.records) {
       const key = `${record.mode}@${record.patch}`;
-      summary[key] ||= { colorStep: 0, detailDip: 0, streak: 0, ghost: 0, rimGhost: 0, squareEdge: 0, detailJump: 0, zoomDetail: 0, n: 0 };
-      for (const metric of ["colorStep", "detailDip", "streak", "ghost", "rimGhost", "squareEdge", "detailJump", "zoomDetail"]) summary[key][metric] += record[metric];
+      summary[key] ||= { colorStep: 0, detailDip: 0, streak: 0, ghost: 0, rimGhost: 0, squareEdge: 0, detailJump: 0, zoomDetail: 0, echo: 0, n: 0 };
+      for (const metric of ["colorStep", "detailDip", "streak", "ghost", "rimGhost", "squareEdge", "detailJump", "zoomDetail", "echo"]) summary[key][metric] += record[metric];
       summary[key].n++;
     }
     for (const value of Object.values(summary)) {
-      for (const metric of ["colorStep", "detailDip", "streak", "ghost", "rimGhost", "squareEdge", "detailJump", "zoomDetail"]) value[metric] = +(value[metric] / value.n).toFixed(4);
+      for (const metric of ["colorStep", "detailDip", "streak", "ghost", "rimGhost", "squareEdge", "detailJump", "zoomDetail", "echo"]) value[metric] = +(value[metric] / value.n).toFixed(4);
       delete value.n;
     }
     fs.writeFileSync(path.join(output, `seam-quality-${label}.json`), JSON.stringify({ ...result, summary, errors }, null, 2));

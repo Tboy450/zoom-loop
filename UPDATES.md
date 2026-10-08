@@ -93,17 +93,20 @@ Preparing takes about 0.3 s per join on a desktop (blurs, the texture loop and r
 - [x] 7.1 Fix the thin square line at twice the photo's size (half-covered pixels along the edge of each photo's drawing layer)
   - [x] Clear those edge pixels after the layer is cut out
   - [x] Test: handoffs unchanged; the line is gone at 1% and 8% (pushed in v21)
-- [ ] 7.2 Sort by tested blend
-  - [ ] Keep today's estimate to shortlist each photo's likely next photos
-  - [ ] Render the shortlisted joins small (as Find Best Spots does) and score how visible each is
-  - [ ] Choose the loop order from the rendered scores, re-testing any chosen join that was not tested
-  - [ ] Measure the order's join scores against today's sort on the store and detailed sets
+- [x] 7.2 Sort by tested blend (tried; today's sort kept)
+  - [x] Rendered the likely joins and chose the order by how visible they were: border scores 30-56% better, but sharpness jumps 1.5-3x worse and far more double exposure; on the contact sheets it picked collage-like joins (a shelf photo inside a busy endcap, an aisle inside a cardboard box)
+  - [x] Added a double-exposure check to the rendered score and counted today's estimate equally: the same outcome
+  - [x] Today's sort, which judges how well the photos' content fits together, gives the more natural joins, so it stays
+  - [x] The double-exposure check also made Find Best Spots slightly worse on the detailed set, so v20's scoring stays
 - [ ] 7.3 Fractal morphology that blends into the scene (keep the effect, add the missing logic)
-  - [ ] Fold along irregular, self-similar lines instead of the photo's straight edges, so the pattern no longer traces the square or forms mirror ornaments
-  - [ ] Dissolve with distance: the photo's shapes near its edge, softer farther out, only its color and light at the outer reach (the shapeless bleed)
-  - [ ] Grade what it carries toward the scene's light and color
-  - [ ] Reach farther where the photo's colors match the scene, pull back where they clash
-  - [ ] Side-by-side images with today's version; switch only if it looks and measures better
+  - Origin: the June 1 Symmetry slider folded the hidden photo into mirrored sectors, with only a manual Alignment slider to fit the scene; the October 4 edge reflection around every photo inherited the same straight mirror. The logic below was never there
+  - [x] Fold along irregular, self-similar lines instead of the photo's straight edges, so the pattern no longer traces the square or forms mirror ornaments
+  - [x] Dissolve with distance: the photo's shapes near its edge, softer farther out, only its color and light at the outer reach (the shapeless bleed)
+  - [x] Grade what it carries toward the scene's light and color
+  - [x] Reach farther where the photo's colors match the scene, pull back where they clash
+  - [x] New "echo" score (how strongly the area around a photo copies it mirrored): 0.38 → 0.03 at 1% on the store photos, 0.20 → 0.02 at 3%, 0.09 → 0.01 at 8%; square-edge scores unchanged (+0-5%)
+  - [x] Side-by-side images and video (`zoom-loop-fractal-blend-before-after.mp4`); all tests pass
+  - [ ] Your call, then push
 - [ ] 7.4 Color harmony slider: gently grade each whole photo toward its neighbours (applied once per photo, so handoffs stay identical)
 - [ ] 7.5 Vertical 9:16 export
 - [ ] 7.6 Hold on each photo, with a gentle ease in and out
