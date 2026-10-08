@@ -23,6 +23,7 @@ const sampleButton = document.querySelector("#sampleButton");
 const autoSortButton = document.querySelector("#autoSortButton");
 const matchPriorityInput = document.querySelector("#matchPriorityInput");
 const placementStyleInput = document.querySelector("#placementStyleInput");
+const edgeStyleInput = document.querySelector("#edgeStyleInput");
 const clearButton = document.querySelector("#clearButton");
 const saveProjectButton = document.querySelector("#saveProjectButton");
 const openProjectButton = document.querySelector("#openProjectButton");
@@ -83,7 +84,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v22";
+const ASSET_VERSION = "v23";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -127,6 +128,7 @@ let frameSession = null;
 const controls = [
   matchPriorityInput,
   placementStyleInput,
+  edgeStyleInput,
   renderModeInput,
   sizeInput,
   durationInput,
@@ -211,6 +213,7 @@ function getSettings() {
     autoAnchor: autoAnchorInput.checked,
     matchPriority: matchPriorityInput.value,
     placementStyle: placementStyleInput.value,
+    edgeStyle: edgeStyleInput.value,
     anchorX: Number(anchorXInput.value) / 100,
     anchorY: Number(anchorYInput.value) / 100,
     bind: Number(bindInput.value) / 100,
@@ -305,6 +308,7 @@ function transitionKey(fromId, toId, settings, override) {
     settings.mode,
     settings.matchPriority,
     settings.placementStyle,
+    settings.edgeStyle,
     settings.smoothGuard ? "guard" : "raw",
     settings.cinematicMode ? "cinema" : "plain",
     settings.patch.toFixed(3),
@@ -1175,8 +1179,8 @@ function syncRenderMode() {
   renderModeHelp.textContent = stitched
     ? "Fixed photo joins follow matching texture and lighting. Prepared locally before playback; only your photos are used."
     : "Hidden photo detail gradually emerges as you zoom.";
-  for (const control of [cinematicModeInput, grainInput, pixelRevealInput, symmetryInput, alignmentInput]) control.disabled = isBusy() || stitched;
-  // Say why the effects are locked rather than leaving them silently grey.
+  for (const control of [edgeStyleInput, cinematicModeInput, grainInput, pixelRevealInput, symmetryInput, alignmentInput]) control.disabled = isBusy() || stitched;
+  // Say why the Blend Style options are locked rather than leaving them silently grey.
   effectsStatus.textContent = stitched ? "Locked: set Mode to Photo Blend to use these"
     : isBusy() ? "Locked until the app finishes preparing" : "Photo Blend only";
   effectsStatus.classList.toggle("is-locked", stitched || isBusy());
@@ -1197,6 +1201,7 @@ function applySmoothDefaults() {
   shapeMorphInput.value = "72";
   grainInput.value = "0";
   pixelRevealInput.value = "0";
+  edgeStyleInput.value = "fractal";
   symmetryInput.value = "1";
   alignmentInput.value = "0";
 
@@ -2186,6 +2191,8 @@ function validateProject(project) {
     // Older project files predate the matching-priority selector.
     if (control === matchPriorityInput && project.settings[control.id] === undefined) project.settings[control.id] = "balanced";
     if (control === placementStyleInput && project.settings[control.id] === undefined) project.settings[control.id] = "match";
+    // Projects saved before edge styles keep the plain mirror they were made with.
+    if (control === edgeStyleInput && project.settings[control.id] === undefined) project.settings[control.id] = "mirror";
     if (control === pixelRevealInput && project.settings[control.id] === undefined) project.settings[control.id] = "0";
     const value = project.settings[control.id];
     if (control.type === "checkbox") {

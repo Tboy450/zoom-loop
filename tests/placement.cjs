@@ -86,8 +86,9 @@ module.exports = async function testPlacement(browser, url) {
     assert.equal(result.after, result.before, "Projects keep tested spots");
     assert.equal(result.reopened, "tested");
     const shimmer = await testShimmer(page);
+    const edges = await testEdgeStyles(page);
     assert.deepEqual(errors, []);
-    return { joins: result.count, seconds: +seconds.toFixed(1), seamMax: result.seamMax, shimmer };
+    return { joins: result.count, seconds: +seconds.toFixed(1), seamMax: result.seamMax, shimmer, edges };
   } finally {
     await page.close();
   }
@@ -141,4 +142,53 @@ async function testShimmer(page) {
   assert.ok(result.shimmer < result.best * 0.6, `Shimmer placement must favor the rippling spot: ${JSON.stringify(result)}`);
   assert.equal(result.reopened, "shimmer");
   return { rippleVsPlain: { best: +result.best.toFixed(2), shimmer: +result.shimmer.toFixed(2) } };
+}
+
+// Each Blend Style edge renders differently around a forming photo, keeps
+// handoffs pixel-identical, and is kept in projects; projects saved before
+// edge styles open with the plain mirror they were made with.
+async function testEdgeStyles(page) {
+  const result = await page.evaluate(async () => {
+    await createSampleSet();
+    const size = 360, frames = {}, seams = {};
+    setCanvasSize(size);
+    const snapshot = makeCanvas(size, size), snapshotCtx = snapshot.getContext("2d", { willReadFrequently: true });
+    const render = (pair, t, settings) => {
+      drawTransition(state.images[pair], state.images[(pair + 1) % state.images.length], t, settings);
+      snapshotCtx.drawImage(previewCanvas, 0, 0);
+      return snapshotCtx.getImageData(0, 0, size, size).data;
+    };
+    for (const style of ["fractal", "band", "mirror"]) {
+      edgeStyleInput.value = style;
+      invalidateTransitions();
+      const settings = { ...getSettings(), mode: "blend", patch: 0.03, size };
+      frames[style] = render(0, 1 - Math.log(0.8 * 0.12) / Math.log(settings.patch), settings);
+      let max = 0;
+      for (let pair = 0; pair < state.images.length; pair++) {
+        const a = render(pair, 1, settings), b = render((pair + 1) % state.images.length, 0, settings);
+        for (let i = 0; i < a.length; i++) max = Math.max(max, Math.abs(a[i] - b[i]));
+      }
+      seams[style] = max;
+    }
+    const differ = (a, b) => { let sum = 0; for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]); return sum / a.length; };
+    edgeStyleInput.value = "band";
+    let saved;
+    const originalDownload = downloadBlob;
+    downloadBlob = blob => { saved = blob; };
+    await saveProject();
+    downloadBlob = originalDownload;
+    edgeStyleInput.value = "fractal";
+    await openProject(new File([saved], "edge.zoomloop"));
+    const reopened = edgeStyleInput.value;
+    const older = JSON.parse(await saved.text());
+    delete older.settings.edgeStyleInput;
+    await openProject(new File([JSON.stringify(older)], "older.zoomloop"));
+    return { seams, fractalVsMirror: differ(frames.fractal, frames.mirror), bandVsMirror: differ(frames.band, frames.mirror),
+      fractalVsBand: differ(frames.fractal, frames.band), reopened, older: edgeStyleInput.value };
+  });
+  for (const [style, max] of Object.entries(result.seams)) assert.ok(max <= 3, `${style} edge must keep handoffs identical: ${max}`);
+  assert.ok(result.fractalVsMirror > 0.01 && result.bandVsMirror > 0.01 && result.fractalVsBand > 0.001, JSON.stringify(result));
+  assert.equal(result.reopened, "band");
+  assert.equal(result.older, "mirror");
+  return { seams: result.seams, fractalVsMirror: +result.fractalVsMirror.toFixed(2) };
 }

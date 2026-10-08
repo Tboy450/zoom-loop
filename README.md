@@ -142,7 +142,7 @@ Removes the picked point for the current join and goes back to `Auto place` or t
 `Smooth guard`
 Softens extreme slider combinations. Leave this on for cleaner transitions, or turn it off when you want harsher pixel or symmetry effects.
 
-`Cinematic reveal` (under `Effects`)
+`Cinematic reveal` (under `Blend Style`)
 Keeps the parent texture and color longer before the child photo emerges, with a slower growth and softer, dreamier edges. Both modes use continuous zoom motion and restore the original photo colors at the handoff.
 
 `Start size`
@@ -174,9 +174,12 @@ Controls the feather outside the embedded photo. The extension softens into the 
 `Organic edge`
 In Photo Blend, sets how much the next photo grows out of areas that already match its surroundings (high) rather than spreading evenly from its middle (low). It also varies the feather along the surrounding texture to reduce a regular geometric outline. It does not distort the photo itself.
 
-## Effects
+## Blend Style
 
-These Photo Blend effects are in the collapsible `Effects` section.
+These Photo Blend options are in the collapsible `Blend Style` section.
+
+`Edge`
+How the next photo's edge continues into the scene while it forms. `Fractal` (the default) folds the photo's border back along irregular, self-similar lines instead of its straight edges, so there are no mirror lines or corner ornaments; the shapes melt into the photo's colors farther out, take on the scene's light, and reach farther where the photo's colors match the scene and less where they clash. `Mirror band + fractal` keeps an exact mirror in a thin band right at the edge, which carries the photo's lines straight across its border, and folds fractally beyond it. `Mirror (classic)` is the plain reflection of earlier versions, whose mirrored copies can form kaleidoscope-like ornaments around the photo. Projects saved before this option open with `Mirror (classic)`, as they were made.
 
 `Pixel reveal`
 How the next photo forms. At 0 (`Soft`) its pieces melt in, as soft as the scene around them, and sharpen as it grows. Higher values build it from finer, crisper pixel specks with harder edges; above 50 the specks become square blocks, up to a bold pixel dissolve of 8 blocks across the photo at 100. The order still follows where the photo matches the scene.

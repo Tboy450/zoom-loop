@@ -24,6 +24,52 @@ const PhotoZoom = (() => {
   // Least share of the photo's detail its camouflage always carries, up to
   // PRESENCE_LEVELS levels of brightness.
   const PRESENCE = 0.1;
+  // Fractal morphology around a forming photo: how far its material reaches
+  // past its edge ([where it clashes, where it matches], in photo widths),
+  // how strongly its folds bend, where its shapes have dissolved into their
+  // colors, and how deep into the photo a fold reaches back for material
+  // (1 would be a mirror; less reuses the material nearer its edge).
+  const MORPH_REACH = [0.16, 0.42];
+  const MORPH_WARP = 1.8;
+  const MORPH_DISSOLVE = 0.08;
+  const MORPH_DEPTH = 0.4;
+
+  // Replaces the straight mirror past a photo's edge (drawExtended) in a
+  // texture: each outside pixel folds back into the photo along a path bent
+  // by fractal noise, which grows with distance, so the border continues the
+  // photo at its edge without mirror lines or corner ornaments, and its
+  // shapes melt into their colors farther out. The photo itself is unchanged.
+  // Edge styles: "fractal" (the default), "band" (an exact mirror in a thin
+  // band at the edge that continues the photo's lines across its border,
+  // fractal folds beyond it) and "mirror" (a plain reflection, as before).
+  const MIRROR_BAND = 0.1;
+  function morphBorder(image, band = 0) {
+    const size = image.width, data = image.data, original = new Uint8ClampedArray(data);
+    const soft = lowPass(image, 6), softer = lowPass(image, 16);
+    for (let y = 0; y < size; y++) {
+      const mv = (y + 0.5) / size * SPAN - HALO;
+      for (let x = 0; x < size; x++) {
+        const mu = (x + 0.5) / size * SPAN - HALO;
+        const beyond = Math.max(0, -mu, mu - 1, -mv, mv - 1);
+        if (beyond <= 0) continue;
+        const fold = band ? smooth(0, band, beyond) : 1;
+        const warp = beyond * MORPH_WARP * fold, depth = mix(1, MORPH_DEPTH, fold);
+        let su = mu < 0 ? -mu * depth : mu > 1 ? 1 - (mu - 1) * depth : mu;
+        let sv = mv < 0 ? -mv * depth : mv > 1 ? 1 - (mv - 1) * depth : mv;
+        su = clamp(su + fractalNoise(mu * 7, mv * 7, 1) * warp, 0, 1);
+        sv = clamp(sv + fractalNoise(mu * 7, mv * 7, 2) * warp, 0, 1);
+        const sx = clamp(Math.floor((su + HALO) / SPAN * size), 0, size - 1);
+        const sy = clamp(Math.floor((sv + HALO) / SPAN * size), 0, size - 1);
+        const from = sy * size + sx, to = (y * size + x) * 4;
+        const melt = smooth(0, MORPH_DISSOLVE, beyond), melted = smooth(MORPH_DISSOLVE * 0.5, MORPH_DISSOLVE * 1.5, beyond);
+        for (let c = 0; c < 3; c++) {
+          const sharp = original[from * 4 + c];
+          data[to + c] = mix(mix(sharp, soft[from * 3 + c], melt), softer[from * 3 + c], melted);
+        }
+      }
+    }
+    return image;
+  }
   const PRESENCE_LEVELS = 4;
   const analysisCache = new WeakMap();
   const extensionCache = new WeakMap();
@@ -35,6 +81,28 @@ const PhotoZoom = (() => {
   let detailCutout;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const mix = (a, b, t) => a + (b - a) * t;
+  // Smooth value noise in [0, 1] and a fractal sum of it in [-1, 1]: the
+  // same irregular structure at several scales.
+  const hashNoise = (x, y) => {
+    let h = Math.imul(x, 374761393) + Math.imul(y, 668265263) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  };
+  const valueNoise = (x, y) => {
+    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+    const sx = xf * xf * (3 - 2 * xf), sy = yf * yf * (3 - 2 * yf);
+    const top = hashNoise(xi, yi) + (hashNoise(xi + 1, yi) - hashNoise(xi, yi)) * sx;
+    const bottom = hashNoise(xi, yi + 1) + (hashNoise(xi + 1, yi + 1) - hashNoise(xi, yi + 1)) * sx;
+    return top + (bottom - top) * sy;
+  };
+  const fractalNoise = (x, y, seed) => {
+    let sum = 0, amplitude = 0.5, frequency = 1;
+    for (let octave = 0; octave < 4; octave++) {
+      sum += (valueNoise(x * frequency + seed * 17.3, y * frequency + seed * 31.7) * 2 - 1) * amplitude;
+      amplitude *= 0.5; frequency *= 2.03;
+    }
+    return sum / 0.9375;
+  };
   const smooth = (lo, hi, v) => {
     const t = clamp((v - lo) / (hi - lo), 0, 1);
     return t * t * (3 - 2 * t);
@@ -743,7 +811,10 @@ const PhotoZoom = (() => {
     const childSource = canvas(TEXTURE_SIZE);
     const childCtx = childSource.getContext("2d", { willReadFrequently: true });
     drawExtended(childCtx, child, TEXTURE_SIZE * HALO / SPAN, TEXTURE_SIZE * HALO / SPAN, TEXTURE_SIZE / SPAN);
-    const childData = childCtx.getImageData(0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
+    // Photo Blend's edge style; Stitched World draws its own seam.
+    const edgeStyle = settings.mode === "stitched" ? "mirror" : settings.edgeStyle || "fractal";
+    const childImage = childCtx.getImageData(0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
+    const childData = edgeStyle === "mirror" ? childImage : morphBorder(childImage, edgeStyle === "band" ? MIRROR_BAND : 0);
     if (settings.mode === "stitched") {
       // Stitched World keeps every photo's own colors throughout.
       const stitched = { ...createStitchedTransition(parentData, childData, extension(child), settings, portal), placement };
@@ -777,6 +848,26 @@ const PhotoZoom = (() => {
         const pixel = y * TEXTURE_SIZE + x;
         const i = pixel * 4;
         let childPixel = pixel;
+        const mu = (x + 0.5) / TEXTURE_SIZE * SPAN - HALO, mv = (y + 0.5) / TEXTURE_SIZE * SPAN - HALO;
+        const beyond = Math.max(0, -mu, mu - 1, -mv, mv - 1);
+        let carry = 1, light = 1;
+        if (beyond > 0 && edgeStyle !== "mirror") {
+          // Reach: far where the photo's edge matches the scene in light and
+          // color, short where it clashes, along an irregular outline.
+          const ex = clamp(Math.floor((clamp(mu, 0, 1) + HALO) / SPAN * TEXTURE_SIZE), 0, TEXTURE_SIZE - 1);
+          const ey = clamp(Math.floor((clamp(mv, 0, 1) + HALO) / SPAN * TEXTURE_SIZE), 0, TEXTURE_SIZE - 1);
+          const e = (ey * TEXTURE_SIZE + ex) * 3;
+          const lightGap = Math.abs((parentLow[e] - childLow[e]) * 0.2126 + (parentLow[e + 1] - childLow[e + 1]) * 0.7152 + (parentLow[e + 2] - childLow[e + 2]) * 0.0722);
+          const colorGap = Math.hypot(parentLow[e] - childLow[e], parentLow[e + 1] - childLow[e + 1], parentLow[e + 2] - childLow[e + 2]);
+          const clash = smooth(8, 60, lightGap * 0.6 + colorGap * 0.4);
+          const reach = mix(MORPH_REACH[1], MORPH_REACH[0], clash) * (1 + 0.35 * fractalNoise(mu * 4, mv * 4, 3));
+          carry = 1 - smooth(reach * 0.35, reach, beyond);
+          // Carried variations take on the scene's light.
+          const at = pixel * 3;
+          const sceneLight = parentLow[at] * 0.2126 + parentLow[at + 1] * 0.7152 + parentLow[at + 2] * 0.0722;
+          const photoLight = childLow[at] * 0.2126 + childLow[at + 1] * 0.7152 + childLow[at + 2] * 0.0722;
+          light = clamp((sceneLight + 8) / (photoLight + 8), 0.6, 1.5);
+        }
         if (fold > 1) {
           const dx = x - TEXTURE_SIZE / 2;
           const dy = y - TEXTURE_SIZE / 2;
@@ -788,7 +879,7 @@ const PhotoZoom = (() => {
           childPixel = sy * TEXTURE_SIZE + sx;
         }
         for (let c = 0; c < 3; c++) {
-          const detail = childData.data[childPixel * 4 + c] - childLow[childPixel * 3 + c];
+          const detail = (childData.data[childPixel * 4 + c] - childLow[childPixel * 3 + c]) * carry * light;
           const parentDetail = parentData.data[i + c] - parentLow[pixel * 3 + c];
           // A faint, steady trace of the photo's own detail from the moment it
           // appears, so it feels as if it had been there all along without

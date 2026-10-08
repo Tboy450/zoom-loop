@@ -10,10 +10,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Zoom Loop">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="manifest.webmanifest?v22">
+    <link rel="manifest" href="manifest.webmanifest?v23">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/icon-192.png">
-    <link rel="stylesheet" href="styles.css?v22">
+    <link rel="stylesheet" href="styles.css?v23">
   </head>
   <body>
     <main class="app-shell">
@@ -229,7 +229,17 @@
         </section>
 
         <details class="panel-section effects-section">
-          <summary><h2>Effects</h2><span id="effectsStatus" class="hint">Photo Blend only</span></summary>
+          <summary><h2>Blend Style</h2><span id="effectsStatus" class="hint">Photo Blend only</span></summary>
+
+          <label class="field">
+            <span>Edge</span>
+            <select id="edgeStyleInput" aria-describedby="edgeStyleHelp">
+              <option value="fractal">Fractal</option>
+              <option value="band">Mirror band + fractal</option>
+              <option value="mirror">Mirror (classic)</option>
+            </select>
+          </label>
+          <p id="edgeStyleHelp" class="hint">How the next photo's edge continues into the scene while it forms. Fractal: irregular, branching shapes that melt into its colors. Mirror band + fractal: an exact mirror right at the edge, then fractal. Mirror: a plain reflection of the photo, as in earlier versions.</p>
 
           <label class="field toggle-field">
             <span>Cinematic reveal</span>
@@ -279,8 +289,8 @@
       </div>
     </dialog>
 
-    <script src="vendor/mp4-muxer.js?v22"></script>
-    <script src="zoom-renderer.js?v22"></script>
-    <script src="app.js?v22"></script>
+    <script src="vendor/mp4-muxer.js?v23"></script>
+    <script src="zoom-renderer.js?v23"></script>
+    <script src="app.js?v23"></script>
   </body>
 </html>

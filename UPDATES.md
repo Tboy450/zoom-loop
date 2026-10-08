@@ -98,7 +98,7 @@ Preparing takes about 0.3 s per join on a desktop (blurs, the texture loop and r
   - [x] Added a double-exposure check to the rendered score and counted today's estimate equally: the same outcome
   - [x] Today's sort, which judges how well the photos' content fits together, gives the more natural joins, so it stays
   - [x] The double-exposure check also made Find Best Spots slightly worse on the detailed set, so v20's scoring stays
-- [ ] 7.3 Fractal morphology that blends into the scene (keep the effect, add the missing logic)
+- [x] 7.3 Fractal morphology that blends into the scene (keep the effect, add the missing logic)
   - Origin: the June 1 Symmetry slider folded the hidden photo into mirrored sectors, with only a manual Alignment slider to fit the scene; the October 4 edge reflection around every photo inherited the same straight mirror. The logic below was never there
   - [x] Fold along irregular, self-similar lines instead of the photo's straight edges, so the pattern no longer traces the square or forms mirror ornaments
   - [x] Dissolve with distance: the photo's shapes near its edge, softer farther out, only its color and light at the outer reach (the shapeless bleed)
@@ -106,7 +106,7 @@ Preparing takes about 0.3 s per join on a desktop (blurs, the texture loop and r
   - [x] Reach farther where the photo's colors match the scene, pull back where they clash
   - [x] New "echo" score (how strongly the area around a photo copies it mirrored): 0.38 → 0.03 at 1% on the store photos, 0.20 → 0.02 at 3%, 0.09 → 0.01 at 8%; square-edge scores unchanged (+0-5%)
   - [x] Side-by-side images and video (`zoom-loop-fractal-blend-before-after.mp4`); all tests pass
-  - [ ] Your call, then push
+  - [x] Blend Style section (renamed from Effects) with an Edge choice: Fractal (default), Mirror band + fractal, Mirror (classic); older projects open with Mirror (pushed in v23)
 - [x] 7.8 Shimmer placement: a second automatic placement style
   - [x] Map where each photo's light shifts (reflections, glare, ripples, glints, streaks, foliage); plain areas low, long straight lines somewhat lower
   - [x] "Auto place looks for: Best match / Shimmer"; Shimmer prefers shimmering spots where the photo's light and color fit, saved in projects
