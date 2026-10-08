@@ -56,10 +56,12 @@ Auto place scores spots with a fast estimate. Rendering a few of the best spots 
 
 ## 3. Check on a real phone
 
-- [ ] 3.1 Export a video on the S25 and confirm it lands in the Gallery and plays smoothly start to finish
-- [ ] 3.2 Note how long "Preparing" takes with 6 and 12 photos
-- [ ] 3.3 Note any stutter during playback at 1080
-- [ ] 3.4 Fix what turns up
+Checked by you on the S25 (2026-10-07).
+
+- [x] 3.1 Export a video on the S25 and confirm it lands in the Gallery and plays smoothly start to finish
+- [x] 3.2 Note how long "Preparing" takes with 6 and 12 photos
+- [x] 3.3 Note any stutter during playback at 1080
+- [x] 3.4 Fix what turns up (nothing reported)
 
 ## 4. Bring the improvements to Stitched World
 
