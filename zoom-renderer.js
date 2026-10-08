@@ -1275,6 +1275,14 @@ const PhotoZoom = (() => {
       local.globalCompositeOperation = "destination-out";
       local.drawImage(incoming.cutout, shiftX, shiftY, span, span);
       local.globalCompositeOperation = "source-over";
+      // The pixels the layer's edge only partly covers keep a trace of every
+      // drawing (lighting most of all), which showed as a thin square line
+      // at twice the photo's size. The feather has faded everything there.
+      const right = Math.floor(shiftX + span), bottom = Math.floor(shiftY + span);
+      local.clearRect(0, 0, layer.width, 1);
+      local.clearRect(0, 0, 1, layer.height);
+      local.clearRect(right, 0, layer.width - right, layer.height);
+      local.clearRect(0, bottom, layer.width, layer.height - bottom);
       return { layer, size, x, y };
     }
 

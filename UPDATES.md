@@ -73,7 +73,7 @@ Checked by you on the S25 (2026-10-07).
 - [x] 4.3 Use the sharp crops in Stitched World too (done with v18/v19: drawn with each photo and used for the stitch)
 - [x] 4.4 Measure, test, push (Find Best Spots also improves Stitched World on the store photos: square edge -2/-10/-12% at 1/3/8%)
 
-## 5. Faster preparing on phones
+## 5. Faster preparing on phones (not needed: preparing is not slow on the S25)
 
 Preparing takes about 0.3 s per join on a desktop (blurs, the texture loop and reading canvases back each take a share; the blur is already a fast running sum). On a phone that is likely 1-1.5 s per join. Speeding it up means moving the work into a background worker, a large change, so it waits for the phone timings in 3.2.
 
@@ -87,3 +87,26 @@ Preparing takes about 0.3 s per join on a desktop (blurs, the texture loop and r
 - [x] 6.1 Quick mode for the photo test suite (`ZOOM_QUICK=1`: four photos, three profiles) for fast checks between steps
 - [ ] 6.2 Split the renderer into smaller files (placement, reveal, lighting, drawing) (deferred: the parts share caches and constants, so splitting is a risky change with nothing to see for it; best done together with the worker in 5.1)
 - [x] 6.3 Keep README and this checklist current (updated with every push)
+
+## 7. Next round
+
+- [x] 7.1 Fix the thin square line at twice the photo's size (half-covered pixels along the edge of each photo's drawing layer)
+  - [x] Clear those edge pixels after the layer is cut out
+  - [x] Test: handoffs unchanged; the line is gone at 1% and 8% (pushed in v21)
+- [ ] 7.2 Sort by tested blend
+  - [ ] Keep today's estimate to shortlist each photo's likely next photos
+  - [ ] Render the shortlisted joins small (as Find Best Spots does) and score how visible each is
+  - [ ] Choose the loop order from the rendered scores, re-testing any chosen join that was not tested
+  - [ ] Measure the order's join scores against today's sort on the store and detailed sets
+- [ ] 7.3 Fractal morphology that blends into the scene (keep the effect, add the missing logic)
+  - [ ] Fold along irregular, self-similar lines instead of the photo's straight edges, so the pattern no longer traces the square or forms mirror ornaments
+  - [ ] Dissolve with distance: the photo's shapes near its edge, softer farther out, only its color and light at the outer reach (the shapeless bleed)
+  - [ ] Grade what it carries toward the scene's light and color
+  - [ ] Reach farther where the photo's colors match the scene, pull back where they clash
+  - [ ] Side-by-side images with today's version; switch only if it looks and measures better
+- [ ] 7.4 Color harmony slider: gently grade each whole photo toward its neighbours (applied once per photo, so handoffs stay identical)
+- [ ] 7.5 Vertical 9:16 export
+- [ ] 7.6 Hold on each photo, with a gentle ease in and out
+- [ ] 7.7 Zoom-out (reverse) mode
+
+Dropped after discussion: motion blur in exports, soundtrack (CapCut does it), undo, and update 5 (preparing is not slow on the S25).
