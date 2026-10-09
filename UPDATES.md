@@ -106,7 +106,7 @@ Preparing takes about 0.3 s per join on a desktop (blurs, the texture loop and r
   - [x] Reach farther where the photo's colors match the scene, pull back where they clash
   - [x] New "echo" score (how strongly the area around a photo copies it mirrored): 0.38 → 0.03 at 1% on the store photos, 0.20 → 0.02 at 3%, 0.09 → 0.01 at 8%; square-edge scores unchanged (+0-5%)
   - [x] Side-by-side images and video (`zoom-loop-fractal-blend-before-after.mp4`); all tests pass
-  - [x] Blend Style section (renamed from Effects) with an Edge choice: Fractal (default), Mirror band + fractal, Mirror (classic); older projects open with Mirror (pushed in v23)
+  - [x] Blend Style section (renamed from Effects) with an Edge choice: Mirror band + fractal (default since v24), Fractal, Mirror (classic); older projects open with Mirror (pushed in v23)
 - [x] 7.8 Shimmer placement: a second automatic placement style
   - [x] Map where each photo's light shifts (reflections, glare, ripples, glints, streaks, foliage); plain areas low, long straight lines somewhat lower
   - [x] "Auto place looks for: Best match / Shimmer"; Shimmer prefers shimmering spots where the photo's light and color fit, saved in projects
@@ -115,6 +115,12 @@ Preparing takes about 0.3 s per join on a desktop (blurs, the texture loop and r
   - [x] Test, push (v22)
 - [ ] 7.9 Forming that adapts to its spot: on plain surfaces the photo arrives as the surface (muted, later, faint halo); in shimmering areas as now; much darker early on dark surfaces
 - [ ] 7.10 Shimmer effect (later): a gentle moving ripple around a forming photo, gone before it fills the screen
+- [x] 7.11 Photos with built-in bars (your Ghostface clip): screenshots of vertical videos carry black bars left and right, so the square crop kept them and the picture formed as a hard-edged strip that opened like a scroll
+  - [x] Detect solid bars in matching pairs when photos are added and frame each photo on its real picture (Frame can still change it); naturally dark areas stay
+  - [x] Only black or white bars count, so solid colored bands in graphics stay
+  - [x] Default Edge is now Mirror band + fractal
+  - [x] Test, push (v24); video: `zoom-loop-bars-fix.mp4`
+- [ ] 7.12 Scroll reveal (optional effect, later): the photo opening like a scroll, on purpose and only when chosen
 - [ ] 7.4 Color harmony slider: gently grade each whole photo toward its neighbours (applied once per photo, so handoffs stay identical)
 - [ ] 7.5 Vertical 9:16 export
 - [ ] 7.6 Hold on each photo, with a gentle ease in and out

@@ -87,8 +87,9 @@ module.exports = async function testPlacement(browser, url) {
     assert.equal(result.reopened, "tested");
     const shimmer = await testShimmer(page);
     const edges = await testEdgeStyles(page);
+    const bars = await testBars(page);
     assert.deepEqual(errors, []);
-    return { joins: result.count, seconds: +seconds.toFixed(1), seamMax: result.seamMax, shimmer, edges };
+    return { joins: result.count, seconds: +seconds.toFixed(1), seamMax: result.seamMax, shimmer, edges, bars };
   } finally {
     await page.close();
   }
@@ -191,4 +192,54 @@ async function testEdgeStyles(page) {
   assert.equal(result.reopened, "band");
   assert.equal(result.older, "mirror");
   return { seams: result.seams, fractalVsMirror: +result.fractalVsMirror.toFixed(2) };
+}
+
+// Solid bars around the real picture (a vertical video in a landscape
+// screenshot, a film still in a vertical one) are framed out on upload;
+// photos without paired, perfectly uniform bars keep the plain square crop.
+async function testBars(page) {
+  const result = await page.evaluate(async () => {
+    clearImages();
+    // A busy picture: colorful waves with noise, so no row or column is uniform.
+    const picture = (ctx, x, y, w, h) => {
+      const img = ctx.createImageData(w, h);
+      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+        const k = (j * w + i) * 4, n = (i * 7919 + j * 104729) % 23;
+        img.data[k] = 120 + 80 * Math.sin(i / 17) + n; img.data[k + 1] = 110 + 70 * Math.sin(j / 23) + n; img.data[k + 2] = 130 + 60 * Math.cos((i + j) / 29) + n; img.data[k + 3] = 255;
+      }
+      ctx.putImageData(img, x, y);
+    };
+    const photo = (name, width, height, draw) => {
+      const c = makeCanvas(width, height), ctx = c.getContext("2d");
+      ctx.fillStyle = "#000"; ctx.fillRect(0, 0, width, height);
+      draw(ctx);
+      return new Promise(resolve => c.toBlob(blob => resolve(new File([blob], name, { type: "image/png" }))));
+    };
+    const files = [
+      // Vertical video in a landscape screenshot: bars left and right.
+      await photo("pillarbox.png", 1600, 900, ctx => picture(ctx, 547, 0, 506, 900)),
+      // Film still in a vertical screenshot: bars above and below.
+      await photo("letterbox.png", 900, 1600, ctx => picture(ctx, 0, 547, 900, 506)),
+      // An ordinary photo.
+      await photo("plain.png", 1200, 800, ctx => picture(ctx, 0, 0, 1200, 800)),
+      // A dark sky along the top only: not a pair of bars.
+      await photo("dark-top.png", 1200, 800, ctx => picture(ctx, 0, 240, 1200, 560))
+    ];
+    await loadFiles(files);
+    // Darkest column and row of each working square: bars left in would be black.
+    return state.images.map(image => {
+      const data = image.canvas.getContext("2d").getImageData(0, 0, 1024, 1024).data;
+      const columnMean = x => { let s = 0; for (let y = 0; y < 1024; y += 4) { const i = (y * 1024 + x) * 4; s += data[i] + data[i + 1] + data[i + 2]; } return s / 768; };
+      const rowMean = y => { let s = 0; for (let x = 0; x < 1024; x += 4) { const i = (y * 1024 + x) * 4; s += data[i] + data[i + 1] + data[i + 2]; } return s / 768; };
+      return { name: image.name, framing: image.framing || null, edges: [columnMean(2), columnMean(1021), rowMean(2), rowMean(1021)].map(v => Math.round(v)) };
+    });
+  });
+  const byName = Object.fromEntries(result.map(r => [r.name.replace(/\.png$/, ""), r]));
+  for (const name of ["pillarbox", "letterbox"]) {
+    assert.ok(byName[name].framing, `${name}: bars are framed out`);
+    assert.ok(byName[name].edges.every(v => v > 40), `${name}: no black bar left in the square ${JSON.stringify(byName[name])}`);
+  }
+  assert.equal(byName.plain.framing, null, "An ordinary photo keeps the plain crop");
+  assert.equal(byName["dark-top"].framing, null, "A dark area on one side is not a bar");
+  return result.map(r => ({ name: r.name, zoom: r.framing ? +r.framing.zoom.toFixed(2) : null }));
 }

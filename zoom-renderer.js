@@ -39,9 +39,10 @@ const PhotoZoom = (() => {
   // by fractal noise, which grows with distance, so the border continues the
   // photo at its edge without mirror lines or corner ornaments, and its
   // shapes melt into their colors farther out. The photo itself is unchanged.
-  // Edge styles: "fractal" (the default), "band" (an exact mirror in a thin
-  // band at the edge that continues the photo's lines across its border,
-  // fractal folds beyond it) and "mirror" (a plain reflection, as before).
+  // Edge styles: "band" (the default: an exact mirror in a thin band at the
+  // edge that continues the photo's lines across its border, fractal folds
+  // beyond it), "fractal" (fractal folds from the edge) and "mirror" (a
+  // plain reflection, as before).
   const MIRROR_BAND = 0.1;
   function morphBorder(image, band = 0) {
     const size = image.width, data = image.data, original = new Uint8ClampedArray(data);
@@ -812,7 +813,7 @@ const PhotoZoom = (() => {
     const childCtx = childSource.getContext("2d", { willReadFrequently: true });
     drawExtended(childCtx, child, TEXTURE_SIZE * HALO / SPAN, TEXTURE_SIZE * HALO / SPAN, TEXTURE_SIZE / SPAN);
     // Photo Blend's edge style; Stitched World draws its own seam.
-    const edgeStyle = settings.mode === "stitched" ? "mirror" : settings.edgeStyle || "fractal";
+    const edgeStyle = settings.mode === "stitched" ? "mirror" : settings.edgeStyle || "band";
     const childImage = childCtx.getImageData(0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
     const childData = edgeStyle === "mirror" ? childImage : morphBorder(childImage, edgeStyle === "band" ? MIRROR_BAND : 0);
     if (settings.mode === "stitched") {

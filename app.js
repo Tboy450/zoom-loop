@@ -84,7 +84,7 @@ const alignmentInput = document.querySelector("#alignmentInput");
 const SOURCE_SIZE = 1024;
 const MAX_PROJECT_BYTES = 200 * 1024 * 1024;
 const TAU = Math.PI * 2;
-const ASSET_VERSION = "v23";
+const ASSET_VERSION = "v24";
 const HEIC_CONVERTER_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   "jpg",
@@ -184,11 +184,78 @@ function coverDraw(ctx, image, width, height) {
   ctx.drawImage(image, cropX, cropY, cropW, cropH, 0, 0, width, height);
 }
 
-function normalizeImage(image) {
+function normalizeImage(image, trimBars = false) {
   const canvas = makeCanvas(SOURCE_SIZE, SOURCE_SIZE);
   const ctx = canvas.getContext("2d", { alpha: false });
-  coverDraw(ctx, image, SOURCE_SIZE, SOURCE_SIZE);
-  return canvas;
+  // Only new uploads: a project's saved square must reopen unchanged.
+  const framing = trimBars ? barFraming(image) : null;
+  if (framing) {
+    const width = image.naturalWidth || image.width, height = image.naturalHeight || image.height;
+    drawPhotoFrame(ctx, { image, width, height }, SOURCE_SIZE, SOURCE_SIZE, framing);
+  } else {
+    coverDraw(ctx, image, SOURCE_SIZE, SOURCE_SIZE);
+  }
+  return { canvas, framing };
+}
+
+// Screenshots of videos often carry solid bars: a vertical video shown in a
+// landscape frame has bars left and right, a film still in a vertical frame
+// has bars above and below. Cropped to a square with its bars, the picture
+// formed as a hard-edged strip that opened like a scroll. Finds such bars
+// (uniform rows or columns of one color, in matching pairs on opposite
+// sides) and returns a framing on the real picture, or null. A naturally
+// dark area is neither perfectly uniform nor paired, so it stays.
+function barFraming(image) {
+  const width = image.naturalWidth || image.width, height = image.naturalHeight || image.height;
+  if (!width || !height) return null;
+  const scale = Math.min(1, 480 / Math.max(width, height));
+  const w = Math.max(16, Math.round(width * scale)), h = Math.max(16, Math.round(height * scale));
+  const probe = makeCanvas(w, h).getContext("2d", { willReadFrequently: true });
+  probe.drawImage(image, 0, 0, w, h);
+  const data = probe.getImageData(0, 0, w, h).data;
+  // Mean color and spread of one row or column.
+  const line = (count, at) => {
+    const sum = [0, 0, 0];
+    let lightSum = 0, lightSquares = 0;
+    for (let k = 0; k < count; k++) {
+      const i = at(k) * 4, light = data[i] * 0.2126 + data[i + 1] * 0.7152 + data[i + 2] * 0.0722;
+      sum[0] += data[i]; sum[1] += data[i + 1]; sum[2] += data[i + 2];
+      lightSum += light; lightSquares += light * light;
+    }
+    const mean = lightSum / count;
+    return { color: sum.map(v => v / count), spread: Math.sqrt(Math.max(0, lightSquares / count - mean * mean)) };
+  };
+  const row = y => line(w, k => y * w + k), column = x => line(h, k => k * w + x);
+  // How many lines from an edge belong to one solid bar. Bars are black or
+  // white; a solid colored band is more likely part of a graphic.
+  const bar = (length, get, fromEnd) => {
+    const first = get(fromEnd ? length - 1 : 0);
+    const light = first.color[0] * 0.2126 + first.color[1] * 0.7152 + first.color[2] * 0.0722;
+    const neutral = Math.max(...first.color) - Math.min(...first.color) < 12;
+    if (first.spread > 4 || !neutral || (light > 32 && light < 232)) return 0;
+    let count = 0;
+    for (let k = 0; k < length * 0.4; k++) {
+      const current = get(fromEnd ? length - 1 - k : k);
+      if (current.spread > 4 || Math.hypot(...current.color.map((v, c) => v - first.color[c])) > 10) break;
+      count++;
+    }
+    return count;
+  };
+  const pair = (a, b, length) => {
+    const small = Math.min(a, b), large = Math.max(a, b);
+    return small >= length * 0.02 && small >= large * 0.5 ? [a, b] : [0, 0];
+  };
+  // One extra line on each side hides the bar's soft, compressed edge.
+  const [left, right] = pair(bar(w, column, false), bar(w, column, true), w).map(v => v && v + 1);
+  const [top, bottom] = pair(bar(h, row, false), bar(h, row, true), h).map(v => v && v + 1);
+  if (!left && !top) return null;
+  const x0 = left / scale, x1 = width - right / scale, y0 = top / scale, y1 = height - bottom / scale;
+  const side = Math.min(x1 - x0, y1 - y0), zoom = Math.min(width, height) / side;
+  if (zoom > 3) return null;
+  const position = (start, end, total) => total - side > 0.5 ? clamp(((start + end) / 2 - side / 2) / (total - side), 0, 1) : 0.5;
+  const framing = { x: position(x0, x1, width), y: position(y0, y1, height), zoom, rotation: 0 };
+  // A trim that leaves the plain centered square unchanged is no trim.
+  return zoom < 1.01 && Math.abs(framing.x - 0.5) < 0.01 && Math.abs(framing.y - 0.5) < 0.01 ? null : framing;
 }
 
 function setCanvasSize(size) {
@@ -574,7 +641,7 @@ async function convertHeicFile(file) {
   return makeConvertedFile(convertedBlob, file);
 }
 
-async function decodeWithImageBitmap(file) {
+async function decodeWithImageBitmap(file, trimBars = false) {
   let bitmap = null;
 
   try {
@@ -585,7 +652,7 @@ async function decodeWithImageBitmap(file) {
 
   try {
     return {
-      canvas: normalizeImage(bitmap),
+      ...normalizeImage(bitmap, trimBars),
       width: bitmap.width,
       height: bitmap.height
     };
@@ -594,7 +661,7 @@ async function decodeWithImageBitmap(file) {
   }
 }
 
-async function decodeWithImageElement(file) {
+async function decodeWithImageElement(file, trimBars = false) {
   const url = URL.createObjectURL(file);
   const image = new Image();
   image.decoding = "async";
@@ -607,7 +674,7 @@ async function decodeWithImageElement(file) {
     });
 
     return {
-      canvas: normalizeImage(image),
+      ...normalizeImage(image, trimBars),
       width: image.naturalWidth || image.width,
       height: image.naturalHeight || image.height
     };
@@ -616,19 +683,19 @@ async function decodeWithImageElement(file) {
   }
 }
 
-async function decodeNatively(file) {
+async function decodeNatively(file, trimBars = false) {
   let bitmapError = null;
 
   if ("createImageBitmap" in window) {
     try {
-      return await decodeWithImageBitmap(file);
+      return await decodeWithImageBitmap(file, trimBars);
     } catch (error) {
       bitmapError = error;
     }
   }
 
   try {
-    return await decodeWithImageElement(file);
+    return await decodeWithImageElement(file, trimBars);
   } catch (imageError) {
     throw bitmapError || imageError;
   }
@@ -637,7 +704,7 @@ async function decodeNatively(file) {
 async function decodePhotoFile(file) {
   try {
     return {
-      ...(await decodeNatively(file)),
+      ...(await decodeNatively(file, true)),
       sourceBlob: file,
       converted: false
     };
@@ -646,7 +713,7 @@ async function decodePhotoFile(file) {
 
     const convertedFile = await convertHeicFile(file);
     return {
-      ...(await decodeNatively(convertedFile)),
+      ...(await decodeNatively(convertedFile, true)),
       sourceBlob: convertedFile,
       converted: true
     };
@@ -688,7 +755,8 @@ async function loadFiles(files) {
           height: decoded.height,
           url: createThumbnailUrl(decoded.canvas),
           canvas: decoded.canvas,
-          sourceBlob: decoded.sourceBlob
+          sourceBlob: decoded.sourceBlob,
+          framing: decoded.framing || undefined
         });
         loadedCount++;
         if (decoded.converted) convertedCount++;
@@ -1201,7 +1269,7 @@ function applySmoothDefaults() {
   shapeMorphInput.value = "72";
   grainInput.value = "0";
   pixelRevealInput.value = "0";
-  edgeStyleInput.value = "fractal";
+  edgeStyleInput.value = "band";
   symmetryInput.value = "1";
   alignmentInput.value = "0";
 
